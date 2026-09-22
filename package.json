@@ -1,0 +1,30 @@
+{
+  "name": "canaima-android-emu",
+  "private": true,
+  "version": "8.4.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "format": "prettier --write . && cd src-tauri && cargo fmt --all || true"
+  },
+  "dependencies": {
+    "@materializecss/materialize": "latest",
+    "@tauri-apps/api": "latest",
+    "@tauri-apps/plugin-opener": "latest",
+    "@lucide/vue": "latest",
+    "pinia": "latest",
+    "vue": "latest",
+    "vue-router": "latest"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "latest",
+    "@vitejs/plugin-vue": "latest",
+    "prettier": "latest",
+    "typescript": "~5.6.2",
+    "vite": "latest",
+    "vue-tsc": "latest"
+  }
+}
