@@ -1,3 +1,4 @@
+mod spice;
 mod titlebar;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -23,7 +24,12 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![greet, titlebar::sync_theme])
+        .invoke_handler(tauri::generate_handler![
+            greet,
+            spice::spice_open_viewer,
+            spice::spice_probe,
+            titlebar::sync_theme
+        ])
         .run(tauri::generate_context!())
         .expect("ups! ocurrio un error al ejecutar la app");
 }
