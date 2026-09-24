@@ -1,0 +1,4 @@
+sudo apt install \
+  libspice-client-glib-2.0-dev \
+  libspice-client-gtk-3.0-dev \
+  libspice-protocol-dev

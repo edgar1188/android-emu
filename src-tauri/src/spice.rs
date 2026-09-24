@@ -1,9 +1,25 @@
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::process::Command;
 use std::time::Duration;
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::Serialize;
+use spice_client::SpiceClientShared;
+use tauri::State;
+
+use crate::SpiceAppState;
+
+pub struct SpiceSession {
+    client: SpiceClientShared,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpiceFrame {
+    pub width: u32,
+    pub height: u32,
+    pub data_url: String,
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -100,18 +116,83 @@ pub fn spice_probe(endpoint: String, timeout_ms: Option<u64>) -> Result<SpicePro
     read_header(stream, &endpoint, "tcp")
 }
 
-#[tauri::command]
-pub fn spice_open_viewer(endpoint: String) -> Result<(), String> {
+fn parse_tcp_endpoint(endpoint: &str) -> Result<(String, u16), String> {
     let address = tcp_endpoint(endpoint.trim());
-    if address.is_empty() || !address.contains(':') {
-        return Err("El endpoint SPICE debe tener el formato host:puerto".into());
+    let (host, port) = address
+        .rsplit_once(':')
+        .ok_or_else(|| "El endpoint SPICE debe tener el formato host:puerto".to_string())?;
+    let port = port
+        .parse::<u16>()
+        .map_err(|_| "El puerto SPICE no es válido".to_string())?;
+    Ok((host.to_string(), port))
+}
+
+#[tauri::command]
+pub async fn spice_connect(
+    endpoint: String,
+    state: State<'_, SpiceAppState>,
+) -> Result<(), String> {
+    let (host, port) = parse_tcp_endpoint(&endpoint)?;
+    let client = SpiceClientShared::new(host, port);
+    client
+        .connect()
+        .await
+        .map_err(|error| format!("No se pudo abrir los canales SPICE: {error}"))?;
+    client
+        .start_event_loop()
+        .await
+        .map_err(|error| format!("No se pudo iniciar el vídeo SPICE: {error}"))?;
+
+    let mut session = state.session.lock().await;
+    *session = Some(SpiceSession { client });
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn spice_disconnect(state: State<'_, SpiceAppState>) -> Result<(), String> {
+    let mut session = state.session.lock().await;
+    if let Some(active) = session.take() {
+        active.client.disconnect().await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn spice_frame(state: State<'_, SpiceAppState>) -> Result<Option<SpiceFrame>, String> {
+    let session = state.session.lock().await;
+    let Some(active) = session.as_ref() else {
+        return Ok(None);
+    };
+
+    let Some(surface) = active.client.get_display_surface(0).await else {
+        return Ok(None);
+    };
+
+    if surface.data.iter().all(|byte| *byte == 0) {
+        return Err(
+            "QEMU conectó SPICE, pero no entregó píxeles decodificables para la pantalla.".into(),
+        );
     }
 
-    Command::new("remote-viewer")
-        .arg(format!("spice://{address}"))
-        .spawn()
-        .map(|_| ())
-        .map_err(|error| format!("No se pudo iniciar remote-viewer: {error}"))
+    let mut encoded = Vec::new();
+    let mut encoder = png::Encoder::new(&mut encoded, surface.width, surface.height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder
+        .write_header()
+        .map_err(|error| format!("No se pudo preparar el frame SPICE: {error}"))?;
+    writer
+        .write_image_data(&surface.data)
+        .map_err(|error| format!("No se pudo codificar el frame SPICE: {error}"))?;
+    writer
+        .finish()
+        .map_err(|error| format!("No se pudo finalizar el frame SPICE: {error}"))?;
+
+    Ok(Some(SpiceFrame {
+        width: surface.width,
+        height: surface.height,
+        data_url: format!("data:image/png;base64,{}", BASE64.encode(encoded)),
+    }))
 }
 
 #[cfg(test)]

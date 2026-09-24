@@ -22,6 +22,10 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
+spice-client = "0.2"
+tokio = { version = "1", features = ["sync"] }
+png = "0.17"
 
 [profile.release]
 panic = "abort"
@@ -29,6 +33,9 @@ codegen-units = 1
 lto = true
 opt-level = "s" 
 strip = true
+
+[patch.crates-io]
+spice-client = { path = "vendor/spice-client" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"

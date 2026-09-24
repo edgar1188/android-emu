@@ -1,0 +1,154 @@
+[package]
+name = "spice-client"
+version = "0.2.0"
+edition = "2021"
+authors = ["Your Name <your.email@example.com>"]
+description = "A pure Rust SPICE client library with native and WebAssembly support"
+documentation = "https://docs.rs/spice-client"
+homepage = "https://github.com/arsfeld/quickemu-manager"
+repository = "https://github.com/arsfeld/quickemu-manager"
+license = "GPL-3.0"
+readme = "README.md"
+keywords = ["spice", "remote-desktop", "virtualization", "wasm", "client"]
+categories = ["network-programming", "wasm", "virtualization"]
+exclude = [
+    ".github/*", 
+    "docker/*",
+    "tests/*",
+    "benches/*",
+    "capture_*.sh",
+    "debug_*.py",
+    "*.zip",
+    "spice-master/*",
+    "PROTOCOL_*.md",
+    "VALIDATION_*.md",
+    "repomix-output.xml"
+]
+
+[package.metadata.docs.rs]
+all-features = true
+targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[package.metadata.wasm-pack]
+wasm-opt = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+test-utils = []
+backend-gtk4 = ["dep:gtk4", "dep:gdk4", "dep:gdk-pixbuf", "dep:gstreamer", "dep:gstreamer-audio", "dep:gstreamer-video", "dep:gstreamer-app"]
+backend-wasm = []
+
+[dependencies]
+bytes = "1.10"
+thiserror = { workspace = true }
+tracing = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+base64 = "0.22"
+png = "0.17"
+rsa = { version = "0.9", features = ["sha1"] }
+rand = "0.8"
+sha1 = "0.10"
+binrw = "0.15"
+chrono = "0.4"
+
+# Image decoding and compression
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
+flate2 = "1.1"
+jpeg-decoder = "0.3"
+
+# Cross-platform dependencies
+instant = { version = "0.1", features = ["wasm-bindgen"] }
+getrandom = { version = "0.3", features = ["wasm_js"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# WASM-compatible dependencies
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { version = "1.46", features = ["sync", "macros", "time", "io-util"], default-features = false }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = [
+    "console",
+    "WebSocket",
+    "MessageEvent",
+    "ErrorEvent",
+    "CloseEvent",
+    "BinaryType",
+    "Window",
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "ImageData",
+    "HtmlVideoElement",
+    "MediaSource",
+    "SourceBuffer",
+    "Url",
+    "Performance",
+    "CssStyleDeclaration",
+] }
+js-sys = "0.3"
+gloo-timers = { version = "0.3", features = ["futures"] }
+console_error_panic_hook = "0.1"
+tracing-wasm = "0.2"
+# Enable JS feature for getrandom in WASM builds (both 0.2 and 0.3 versions)
+getrandom = { version = "0.2", features = ["js"] }
+
+# Native dependencies
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1.46", features = ["full"] }
+clap = { version = "4.5", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# LZ4 is not available in WASM (requires C compilation)
+lz4 = "1.28"
+
+# Optional backend dependencies
+gtk4 = { version = "0.9", optional = true }
+gdk4 = { version = "0.9", optional = true }
+gdk-pixbuf = { version = "0.20", optional = true }
+gstreamer = { version = "0.23", optional = true }
+gstreamer-audio = { version = "0.23", optional = true }
+gstreamer-video = { version = "0.23", optional = true }
+gstreamer-app = { version = "0.23", optional = true }
+
+[dev-dependencies]
+tokio-test = "0.4"
+base64 = "0.22"
+bincode = "2.0"
+criterion = "0.6"
+proptest = "1.7"
+async-trait = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+wasm-bindgen-test = "0.3"
+
+[[test]]
+name = "integration"
+path = "tests/integration/mod.rs"
+required-features = []
+
+[[bin]]
+name = "spice-test-client"
+path = "src/bin/spice-test-client.rs"
+
+[[bin]]
+name = "spice-e2e-test"
+path = "src/bin/spice-e2e-test.rs"
+
+
+[[bin]]
+name = "rusty-spice-gtk"
+path = "src/bin/rusty-spice-gtk.rs"
+required-features = ["backend-gtk4"]
+
+[[bin]]
+name = "debug-spice-address"
+path = "src/bin/debug_spice_address.rs"

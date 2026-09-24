@@ -1,7 +1,16 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import { Activity, Monitor, Settings2 } from '@lucide/vue'
 import Navbar from '../components/Navbar.vue'
 import SpiceConnection from '../components/SpiceConnection.vue'
+
+const frameUrl = ref('')
+const frameSize = ref({ width: 0, height: 0 })
+
+function updateFrame(frame: { width: number; height: number; dataUrl: string }) {
+  frameUrl.value = frame.dataUrl
+  frameSize.value = { width: frame.width, height: frame.height }
+}
 </script>
 
 <template>
@@ -33,15 +42,19 @@ import SpiceConnection from '../components/SpiceConnection.vue'
             <span class="panel-badge">SPICE</span>
           </div>
 
-          <div class="display-placeholder">
+          <div v-if="!frameUrl" class="display-placeholder">
             <Activity :size="34" />
             <strong>Esperando conexión de vídeo</strong>
-            <span>La pantalla de Android aparecerá aquí cuando el cliente SPICE negocie sus canales.</span>
+            <span>Conecta SPICE para recibir la pantalla de Android dentro de esta ventana.</span>
+          </div>
+          <div v-else class="display-frame">
+            <img :src="frameUrl" alt="Pantalla del dispositivo Android emulado" />
+            <span>{{ frameSize.width }} x {{ frameSize.height }}</span>
           </div>
         </section>
 
         <aside class="control-column">
-          <SpiceConnection />
+          <SpiceConnection @frame="updateFrame" />
 
           <section class="settings-panel">
             <div class="panel-title">
@@ -186,6 +199,34 @@ h1 {
   background: #f7fafb;
   color: #87a0a8;
   text-align: center;
+}
+
+.display-frame {
+  position: relative;
+  display: grid;
+  min-height: 535px;
+  place-items: center;
+  padding: 1.5rem;
+  background: #0b1216;
+}
+
+.display-frame img {
+  display: block;
+  width: 100%;
+  max-height: 500px;
+  object-fit: contain;
+  image-rendering: auto;
+}
+
+.display-frame span {
+  position: absolute;
+  right: 1rem;
+  bottom: 1rem;
+  padding: 0.25rem 0.45rem;
+  border-radius: 4px;
+  background: rgb(0 0 0 / 55%);
+  color: #d6e4e7;
+  font-size: 0.72rem;
 }
 
 .display-placeholder strong {

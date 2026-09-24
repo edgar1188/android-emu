@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onUnmounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { CheckCircle, RefreshCw, Wifi, XCircle } from '@lucide/vue'
 
@@ -14,18 +14,25 @@ const endpoint = ref('127.0.0.1:5556')
 const result = ref<SpiceProbeResult | null>(null)
 const errorMessage = ref('')
 const isConnecting = ref(false)
-const isOpeningViewer = ref(false)
+let frameTimer: ReturnType<typeof setInterval> | undefined
 
-async function probeConnection() {
+const emit = defineEmits<{
+    frame: [frame: { width: number; height: number; dataUrl: string }]
+}>()
+async function connectVideo() {
     isConnecting.value = true
     result.value = null
     errorMessage.value = ''
 
     try {
-        result.value = await invoke<SpiceProbeResult>('spice_probe', {
-            endpoint: endpoint.value.trim(),
-            timeoutMs: 1500,
-        })
+        await invoke('spice_connect', { endpoint: endpoint.value.trim() })
+        result.value = {
+            transport: 'tcp',
+            majorVersion: 2,
+            minorVersion: 2,
+            messageSize: 0,
+        }
+        startFramePolling()
     } catch (error) {
         errorMessage.value = String(error)
     } finally {
@@ -33,18 +40,26 @@ async function probeConnection() {
     }
 }
 
-async function openViewer() {
-    isOpeningViewer.value = true
-    errorMessage.value = ''
-
+async function readFrame() {
     try {
-        await invoke('spice_open_viewer', { endpoint: endpoint.value.trim() })
+        const frame = await invoke<{ width: number; height: number; dataUrl: string } | null>('spice_frame')
+        if (frame) emit('frame', frame)
     } catch (error) {
         errorMessage.value = String(error)
-    } finally {
-        isOpeningViewer.value = false
     }
 }
+
+function startFramePolling() {
+    if (frameTimer) clearInterval(frameTimer)
+    void readFrame()
+    frameTimer = setInterval(() => void readFrame(), 100)
+}
+
+onUnmounted(() => {
+    if (frameTimer) clearInterval(frameTimer)
+    void invoke('spice_disconnect')
+})
+
 </script>
 
 <template>
@@ -57,19 +72,14 @@ async function openViewer() {
             <Wifi :size="22" aria-hidden="true" />
         </div>
 
-        <form @submit.prevent="probeConnection">
+        <form @submit.prevent="connectVideo">
             <label for="spice-endpoint">Endpoint SPICE</label>
             <input id="spice-endpoint" v-model="endpoint" class="input-canaima" type="text" required autocomplete="off"
                 placeholder="127.0.0.1:5556 o unix:/tmp/android.spice" />
             <button class="btn-canaima" type="submit" :disabled="isConnecting">
                 <RefreshCw v-if="isConnecting" :size="18" class="spin-anim" aria-hidden="true" />
                 <Wifi v-else :size="18" aria-hidden="true" />
-                {{ isConnecting ? 'Conectando...' : 'Probar conexión' }}
-            </button>
-            <button class="viewer-button" type="button" :disabled="isOpeningViewer" @click="openViewer">
-                <RefreshCw v-if="isOpeningViewer" :size="18" class="spin-anim" aria-hidden="true" />
-                <Wifi v-else :size="18" aria-hidden="true" />
-                {{ isOpeningViewer ? 'Abriendo visor...' : 'Abrir visor SPICE' }}
+                {{ isConnecting ? 'Conectando vídeo...' : 'Conectar vídeo SPICE' }}
             </button>
         </form>
 
@@ -127,26 +137,6 @@ label {
 .btn-canaima {
     width: 100%;
     justify-content: center;
-}
-
-.viewer-button {
-    display: inline-flex;
-    width: 100%;
-    align-items: center;
-    justify-content: center;
-    gap: 0.5rem;
-    margin-top: 0.65rem;
-    padding: 0.75rem 1.5rem;
-    border: 1px solid var(--canaima-primary);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--canaima-primary);
-    cursor: pointer;
-    font-size: 1rem;
-}
-
-.viewer-button:hover {
-    background: rgb(11 103 147 / 8%);
 }
 
 .spice-status {
