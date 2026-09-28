@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onUnmounted, ref } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { Channel, invoke } from '@tauri-apps/api/core'
 import { CheckCircle, RefreshCw, Wifi, XCircle } from '@lucide/vue'
 
 type SpiceProbeResult = {
@@ -14,11 +14,8 @@ const endpoint = ref('127.0.0.1:5556')
 const result = ref<SpiceProbeResult | null>(null)
 const errorMessage = ref('')
 const isConnecting = ref(false)
-let frameTimer: ReturnType<typeof setInterval> | undefined
-let frameReadInProgress = false
-
 const emit = defineEmits<{
-    frame: [frame: { width: number; height: number; dataUrl: string }]
+    frame: [frame: ArrayBuffer]
 }>()
 async function connectVideo() {
     isConnecting.value = true
@@ -26,14 +23,15 @@ async function connectVideo() {
     errorMessage.value = ''
 
     try {
-        await invoke('spice_connect', { endpoint: endpoint.value.trim() })
+        const onFrame = new Channel<ArrayBuffer>()
+        onFrame.onmessage = (frame) => emit('frame', frame)
+        await invoke('spice_connect', { endpoint: endpoint.value.trim(), onFrame })
         result.value = {
             transport: 'tcp',
             majorVersion: 2,
             minorVersion: 2,
             messageSize: 0,
         }
-        startFramePolling()
     } catch (error) {
         errorMessage.value = String(error)
     } finally {
@@ -41,28 +39,8 @@ async function connectVideo() {
     }
 }
 
-async function readFrame() {
-    if (frameReadInProgress) return
-    frameReadInProgress = true
-    try {
-        const frame = await invoke<{ width: number; height: number; dataUrl: string } | null>('spice_frame')
-        if (frame) emit('frame', frame)
-    } catch (error) {
-        errorMessage.value = String(error)
-    } finally {
-        frameReadInProgress = false
-    }
-}
-
-function startFramePolling() {
-    if (frameTimer) clearInterval(frameTimer)
-    void readFrame()
-    frameTimer = setInterval(() => void readFrame(), 100)
-}
-
 onUnmounted(() => {
-    if (frameTimer) clearInterval(frameTimer)
-    void invoke('spice_disconnect')
+    void invoke('spice_disconnect').catch(() => undefined)
 })
 
 </script>

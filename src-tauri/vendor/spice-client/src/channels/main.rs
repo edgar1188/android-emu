@@ -4,11 +4,14 @@ use crate::protocol::*;
 use crate::utils::sleep;
 use binrw::BinRead;
 use instant::{Duration, Instant};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
 pub struct MainChannel {
     connection: ChannelConnection,
     session_id: Option<u32>,
+    mouse_mode_state: Option<Arc<AtomicU32>>,
 }
 
 impl MainChannel {
@@ -19,6 +22,7 @@ impl MainChannel {
         Ok(Self {
             connection,
             session_id: None,
+            mouse_mode_state: None,
         })
     }
 
@@ -44,6 +48,7 @@ impl MainChannel {
         Ok(Self {
             connection,
             session_id: None,
+            mouse_mode_state: None,
         })
     }
 
@@ -68,11 +73,16 @@ impl MainChannel {
         Ok(Self {
             connection,
             session_id: None,
+            mouse_mode_state: None,
         })
     }
 
     pub fn get_session_id(&self) -> Option<u32> {
         self.session_id
+    }
+
+    pub(crate) fn set_mouse_mode_state(&mut self, state: Arc<AtomicU32>) {
+        self.mouse_mode_state = Some(state);
     }
 
     pub async fn send_attach_channels(&mut self) -> Result<()> {
@@ -390,6 +400,9 @@ impl Channel for MainChannel {
                     "  Server mouse mode: {}, agent_connected: {}",
                     init_msg.current_mouse_mode, init_msg.agent_connected
                 );
+                if let Some(mouse_mode_state) = &self.mouse_mode_state {
+                    mouse_mode_state.store(init_msg.current_mouse_mode, Ordering::Release);
+                }
 
                 // Store the session_id for use by other channels
                 self.session_id = Some(init_msg.session_id);
@@ -416,7 +429,9 @@ impl Channel for MainChannel {
                 let mouse_mode = SpiceMsgMainMouseMode::read(&mut cursor)
                     .map_err(|e| SpiceError::Protocol(format!("Failed to parse MouseMode: {e}")))?;
                 info!("Mouse mode changed to: {}", mouse_mode.mode);
-                // TODO: Store mouse mode and notify input handling
+                if let Some(mouse_mode_state) = &self.mouse_mode_state {
+                    mouse_mode_state.store(mouse_mode.mode, Ordering::Release);
+                }
             }
             x if x == MainChannelMessage::MultiMediaTime as u16 => {
                 let mut cursor = std::io::Cursor::new(data);

@@ -14,9 +14,8 @@ const pressedKeys = new Set<number>()
 const pressedButtons = new Set<number>()
 let lastPointerPosition: { x: number; y: number } | null = null
 let inputQueue: Promise<unknown> = Promise.resolve()
-let lastFrameDataUrl = ''
 let frameRevision = 0
-let pendingMotion: { x: number; y: number; buttons: number } | null = null
+let pendingMotion: { x: number; y: number; absoluteX: number; absoluteY: number; buttons: number } | null = null
 let motionFrame = 0
 
 const keyScancodes: Record<string, number> = {
@@ -67,7 +66,7 @@ function buttonMask() {
   return [...pressedButtons].reduce((mask, button) => mask | button, 0)
 }
 
-function sendPointerMotion(event: PointerEvent) {
+function sendPointerMotion(event: PointerEvent, force = false) {
   const point = pointerCoordinates(event)
   if (!point) return
 
@@ -77,10 +76,12 @@ function sendPointerMotion(event: PointerEvent) {
   }
   const x = point.x - previous.x
   const y = point.y - previous.y
-  if (x || y) {
+  if (x || y || force) {
     pendingMotion = {
       x: (pendingMotion?.x ?? 0) + x,
       y: (pendingMotion?.y ?? 0) + y,
+      absoluteX: point.x,
+      absoluteY: point.y,
       buttons: buttonMask(),
     }
     if (!motionFrame) motionFrame = requestAnimationFrame(flushPointerMotion)
@@ -108,7 +109,7 @@ function onPointerDown(event: PointerEvent) {
   } catch {
     // Pointer capture may be unavailable when the frame is being replaced.
   }
-  sendPointerMotion(event)
+  sendPointerMotion(event, true)
   if (motionFrame) cancelAnimationFrame(motionFrame)
   flushPointerMotion()
   pressedButtons.add(button)
@@ -119,7 +120,7 @@ function onPointerUp(event: PointerEvent) {
   const button = event.button === 1 ? 2 : event.button === 2 ? 4 : 1
   const buttonName = button === 1 ? 'left' : button === 2 ? 'middle' : 'right'
   event.preventDefault()
-  sendPointerMotion(event)
+  sendPointerMotion(event, true)
   if (motionFrame) cancelAnimationFrame(motionFrame)
   flushPointerMotion()
   pressedButtons.delete(button)
@@ -162,11 +163,23 @@ function releaseInputs() {
   pressedButtons.clear()
 }
 
-async function updateFrame(frame: { width: number; height: number; dataUrl: string }) {
-  if (frame.dataUrl === lastFrameDataUrl) return
+async function updateFrame(buffer: ArrayBuffer) {
+  if (buffer.byteLength < 8) {
+    frameError.value = 'El frame SPICE recibido está incompleto.'
+    return
+  }
+
+  const header = new DataView(buffer)
+  const width = header.getUint32(0, true)
+  const height = header.getUint32(4, true)
+  const pixelLength = width * height * 4
+  if (!width || !height || buffer.byteLength !== 8 + pixelLength) {
+    frameError.value = 'El frame SPICE tiene dimensiones o datos inválidos.'
+    return
+  }
 
   const revision = ++frameRevision
-  frameSize.value = { width: frame.width, height: frame.height }
+  frameSize.value = { width, height }
   await nextTick()
 
   const canvas = displayCanvas.value
@@ -176,25 +189,20 @@ async function updateFrame(frame: { width: number; height: number; dataUrl: stri
     return
   }
 
-  const image = new Image()
-  image.src = frame.dataUrl
-
-  try {
-    await image.decode()
-  } catch {
-    if (revision === frameRevision) frameError.value = 'No se pudo decodificar el frame SPICE.'
-    return
-  }
-
   if (revision !== frameRevision) return
 
-  if (canvas.width !== frame.width || canvas.height !== frame.height) {
-    canvas.width = frame.width
-    canvas.height = frame.height
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width
+    canvas.height = height
   }
-  context.drawImage(image, 0, 0, frame.width, frame.height)
-  lastFrameDataUrl = frame.dataUrl
+  const pixels = new Uint8ClampedArray(buffer, 8, pixelLength)
+  context.putImageData(new ImageData(pixels, width, height), 0, 0)
   frameError.value = ''
+}
+
+function onPointerCancel() {
+  releaseInputs()
+  lastPointerPosition = null
 }
 
 onMounted(() => window.addEventListener('blur', releaseInputs))
@@ -227,7 +235,7 @@ onUnmounted(() => {
           </div>
           <div v-else ref="displayFrame" class="display-frame" tabindex="0" aria-label="Pantalla interactiva de Android"
             @pointerdown="onPointerDown" @pointermove="sendPointerMotion" @pointerup="onPointerUp"
-            @pointercancel="onPointerUp" @wheel.prevent="onWheel" @contextmenu.prevent @keydown="onKeyDown"
+            @pointercancel="onPointerCancel" @wheel.prevent="onWheel" @contextmenu.prevent @keydown="onKeyDown"
             @keyup="onKeyUp">
             <canvas ref="displayCanvas" :width="frameSize.width" :height="frameSize.height" role="img"
               aria-label="Pantalla de Android" />

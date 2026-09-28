@@ -38,7 +38,6 @@ pub fn run() {
             greet,
             spice::spice_connect,
             spice::spice_disconnect,
-            spice::spice_frame,
             spice::spice_key,
             spice::spice_mouse_button,
             spice::spice_mouse_motion,

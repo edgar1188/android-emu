@@ -9,6 +9,7 @@ use crate::utils::sleep;
 use crate::video::{create_video_output, VideoOutput};
 use instant::Duration;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 #[cfg(not(target_arch = "wasm32"))]
@@ -36,6 +37,7 @@ pub struct SpiceClientInner {
     #[cfg(target_arch = "wasm32")]
     session_id: String,
     password: Option<String>,
+    mouse_mode: Arc<AtomicU32>,
     main_channel: Option<Arc<Mutex<MainChannel>>>,
     display_channels: HashMap<u8, Arc<Mutex<DisplayChannel>>>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -108,6 +110,7 @@ impl SpiceClientShared {
                 #[cfg(target_arch = "wasm32")]
                 session_id: format!("spice-{}", Date::now() as u64),
                 password: None,
+                mouse_mode: Arc::new(AtomicU32::new(1)),
                 main_channel: None,
                 display_channels: HashMap::new(),
                 inputs_channels: HashMap::new(),
@@ -192,6 +195,7 @@ impl SpiceClientShared {
                 auth_token,
                 session_id,
                 password: None,
+                mouse_mode: Arc::new(AtomicU32::new(1)),
                 main_channel: None,
                 display_channels: HashMap::new(),
                 inputs_channels: HashMap::new(),
@@ -317,6 +321,7 @@ impl SpiceClientShared {
                     inner.password.clone(),
                 )
                 .await?;
+                main_channel.set_mouse_mode_state(inner.mouse_mode.clone());
                 main_channel.initialize().await?;
 
                 let channels = main_channel.get_channels_list().await?;
@@ -431,6 +436,7 @@ impl SpiceClientShared {
             );
 
             let mut main_channel = MainChannel::new(&inner.host, inner.port).await?;
+            main_channel.set_mouse_mode_state(inner.mouse_mode.clone());
             main_channel.initialize().await?;
 
             // Get the session_id from main channel
@@ -1028,6 +1034,59 @@ impl SpiceClientShared {
                 inputs_channel
                     .send_mouse_motion_with_buttons(x, y, buttons_state)
                     .await
+            } else {
+                Err(SpiceError::Protocol(format!(
+                    "Inputs channel {} not connected",
+                    channel_id
+                )))
+            }
+        }
+    }
+
+    /// Sends pointer coordinates using the mode negotiated on the main channel.
+    pub async fn send_mouse_motion_adaptive(
+        &self,
+        channel_id: u8,
+        delta_x: i32,
+        delta_y: i32,
+        absolute_x: u32,
+        absolute_y: u32,
+        buttons_state: u32,
+    ) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mouse_mode = self.inner.lock().await.mouse_mode.load(Ordering::Acquire);
+            let command = if mouse_mode == 2 {
+                InputCommand::MousePosition {
+                    x: absolute_x,
+                    y: absolute_y,
+                    buttons: buttons_state,
+                }
+            } else {
+                InputCommand::MouseMotion {
+                    x: delta_x,
+                    y: delta_y,
+                    buttons: buttons_state,
+                }
+            };
+            return self.send_input_command(channel_id, command).await;
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let inner = self.inner.lock().await;
+            let mouse_mode = inner.mouse_mode.load(Ordering::Acquire);
+            if let Some(inputs_channel_arc) = inner.inputs_channels.get(&channel_id) {
+                let mut inputs_channel = inputs_channel_arc.lock().await;
+                if mouse_mode == 2 {
+                    inputs_channel
+                        .send_mouse_position(absolute_x, absolute_y, buttons_state, 0)
+                        .await
+                } else {
+                    inputs_channel
+                        .send_mouse_motion_with_buttons(delta_x, delta_y, buttons_state)
+                        .await
+                }
             } else {
                 Err(SpiceError::Protocol(format!(
                     "Inputs channel {} not connected",

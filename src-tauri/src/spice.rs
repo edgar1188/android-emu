@@ -2,24 +2,22 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::Serialize;
 use spice_client::channels::MouseButton;
 use spice_client::SpiceClientShared;
-use tauri::State;
+use std::sync::{Arc, Mutex as StdMutex};
+use tauri::{
+    ipc::{Channel, InvokeResponseBody},
+    State,
+};
+use tokio::sync::Notify;
+use tokio::task::JoinHandle;
 
 use crate::SpiceAppState;
 
 pub struct SpiceSession {
     client: SpiceClientShared,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SpiceFrame {
-    pub width: u32,
-    pub height: u32,
-    pub data_url: String,
+    frame_task: JoinHandle<()>,
 }
 
 #[derive(Debug, Serialize)]
@@ -140,7 +138,7 @@ fn validate_surface(
     }
 
     let expected_len = match surface.format {
-        32 => (surface.width * surface.height * 4) as usize,
+        1 | 8 | 32 => (surface.width * surface.height * 4) as usize,
         24 => (surface.width * surface.height * 3) as usize,
         16 => (surface.width * surface.height * 2) as usize,
         _ => (surface.width * surface.height) as usize,
@@ -160,7 +158,7 @@ fn normalize_surface_pixels(surface: &spice_client::channels::display::DisplaySu
     let pixel_count = (surface.width * surface.height) as usize;
 
     match surface.format {
-        32 => {
+        1 | 8 | 32 => {
             let mut rgba = Vec::with_capacity(pixel_count * 4);
             for chunk in surface.data.chunks_exact(4) {
                 let [b, g, r, a] = [chunk[0], chunk[1], chunk[2], chunk[3]];
@@ -199,11 +197,13 @@ fn normalize_surface_pixels(surface: &spice_client::channels::display::DisplaySu
 #[tauri::command]
 pub async fn spice_connect(
     endpoint: String,
+    on_frame: Channel<InvokeResponseBody>,
     state: State<'_, SpiceAppState>,
 ) -> Result<(), String> {
     {
         let mut session = state.session.lock().await;
         if let Some(previous) = session.take() {
+            previous.frame_task.abort();
             previous.client.disconnect().await;
         }
     }
@@ -214,13 +214,60 @@ pub async fn spice_connect(
         .connect()
         .await
         .map_err(|error| format!("No se pudo abrir los canales SPICE: {error}"))?;
+
+    let latest_frame = Arc::new(StdMutex::new(None));
+    let frame_notify = Arc::new(Notify::new());
+    let callback_frame = Arc::clone(&latest_frame);
+    let callback_notify = Arc::clone(&frame_notify);
     client
-        .start_event_loop()
+        .set_display_update_callback(0, move |surface| {
+            let Ok(mut latest) = callback_frame.lock() else {
+                return;
+            };
+            *latest = Some(surface.clone());
+            drop(latest);
+            callback_notify.notify_one();
+        })
         .await
-        .map_err(|error| format!("No se pudo iniciar el vídeo SPICE: {error}"))?;
+        .map_err(|error| format!("No se pudo registrar la actualización de vídeo: {error}"))?;
+
+    let worker_frame = Arc::clone(&latest_frame);
+    let worker_notify = Arc::clone(&frame_notify);
+    let frame_task = tokio::spawn(async move {
+        loop {
+            let notified = worker_notify.notified();
+            let surface = match worker_frame.lock() {
+                Ok(mut latest) => latest.take(),
+                Err(poisoned) => poisoned.into_inner().take(),
+            };
+            let Some(surface) = surface else {
+                notified.await;
+                continue;
+            };
+
+            if validate_surface(&surface).is_err() {
+                continue;
+            }
+
+            let rgba_pixels = normalize_surface_pixels(&surface);
+            let mut payload = Vec::with_capacity(8 + rgba_pixels.len());
+            payload.extend_from_slice(&surface.width.to_le_bytes());
+            payload.extend_from_slice(&surface.height.to_le_bytes());
+            payload.extend_from_slice(&rgba_pixels);
+
+            if on_frame.send(InvokeResponseBody::Raw(payload)).is_err() {
+                break;
+            }
+        }
+    });
+
+    client.start_event_loop().await.map_err(|error| {
+        frame_task.abort();
+        format!("No se pudo iniciar el vídeo SPICE: {error}")
+    })?;
 
     let mut session = state.session.lock().await;
-    *session = Some(SpiceSession { client });
+    *session = Some(SpiceSession { client, frame_task });
     Ok(())
 }
 
@@ -228,6 +275,7 @@ pub async fn spice_connect(
 pub async fn spice_disconnect(state: State<'_, SpiceAppState>) -> Result<(), String> {
     let mut session = state.session.lock().await;
     if let Some(active) = session.take() {
+        active.frame_task.abort();
         active.client.disconnect().await;
     }
     Ok(())
@@ -237,6 +285,8 @@ pub async fn spice_disconnect(state: State<'_, SpiceAppState>) -> Result<(), Str
 pub async fn spice_mouse_motion(
     x: i32,
     y: i32,
+    absolute_x: u32,
+    absolute_y: u32,
     buttons: u32,
     state: State<'_, SpiceAppState>,
 ) -> Result<(), String> {
@@ -246,7 +296,7 @@ pub async fn spice_mouse_motion(
         .ok_or_else(|| "No hay una conexión SPICE activa.".to_string())?;
     active
         .client
-        .send_mouse_motion_with_buttons(0, x, y, buttons)
+        .send_mouse_motion_adaptive(0, x, y, absolute_x, absolute_y, buttons)
         .await
         .map_err(|error| format!("No se pudo enviar el movimiento del puntero: {error}"))
 }
@@ -306,41 +356,6 @@ pub async fn spice_key(
         active.client.send_key_up(0, scancode).await
     };
     result.map_err(|error| format!("No se pudo enviar la tecla SPICE: {error}"))
-}
-
-#[tauri::command]
-pub async fn spice_frame(state: State<'_, SpiceAppState>) -> Result<Option<SpiceFrame>, String> {
-    let session = state.session.lock().await;
-    let Some(active) = session.as_ref() else {
-        return Ok(None);
-    };
-
-    let Some(surface) = active.client.get_display_surface(0).await else {
-        return Ok(None);
-    };
-
-    validate_surface(&surface)?;
-
-    let rgba_pixels = normalize_surface_pixels(&surface);
-    let mut encoded = Vec::new();
-    let mut encoder = png::Encoder::new(&mut encoded, surface.width, surface.height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder
-        .write_header()
-        .map_err(|error| format!("No se pudo preparar el frame SPICE: {error}"))?;
-    writer
-        .write_image_data(&rgba_pixels)
-        .map_err(|error| format!("No se pudo codificar el frame SPICE: {error}"))?;
-    writer
-        .finish()
-        .map_err(|error| format!("No se pudo finalizar el frame SPICE: {error}"))?;
-
-    Ok(Some(SpiceFrame {
-        width: surface.width,
-        height: surface.height,
-        data_url: format!("data:image/png;base64,{}", BASE64.encode(encoded)),
-    }))
 }
 
 #[cfg(test)]
@@ -406,5 +421,18 @@ mod tests {
 
         let pixels = normalize_surface_pixels(&surface);
         assert_eq!(pixels, vec![255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn converts_spice_xrgb_surface_to_rgba() {
+        let surface = DisplaySurface {
+            width: 1,
+            height: 1,
+            format: 1,
+            data: vec![0x00, 0x00, 0xFF, 0x00],
+        };
+
+        let pixels = normalize_surface_pixels(&surface);
+        assert_eq!(pixels, vec![255, 0, 0, 0]);
     }
 }
