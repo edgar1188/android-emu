@@ -15,6 +15,7 @@ const result = ref<SpiceProbeResult | null>(null)
 const errorMessage = ref('')
 const isConnecting = ref(false)
 let frameTimer: ReturnType<typeof setInterval> | undefined
+let frameReadInProgress = false
 
 const emit = defineEmits<{
     frame: [frame: { width: number; height: number; dataUrl: string }]
@@ -41,11 +42,15 @@ async function connectVideo() {
 }
 
 async function readFrame() {
+    if (frameReadInProgress) return
+    frameReadInProgress = true
     try {
         const frame = await invoke<{ width: number; height: number; dataUrl: string } | null>('spice_frame')
         if (frame) emit('frame', frame)
     } catch (error) {
         errorMessage.value = String(error)
+    } finally {
+        frameReadInProgress = false
     }
 }
 

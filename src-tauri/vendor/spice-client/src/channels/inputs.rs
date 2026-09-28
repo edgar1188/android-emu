@@ -3,6 +3,7 @@
 use crate::channels::{Channel, ChannelConnection, InputEvent, KeyCode, MouseButton};
 use crate::error::{Result, SpiceError};
 use crate::protocol::*;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, info, warn};
 
 /// Mouse operation mode
@@ -17,6 +18,7 @@ pub struct InputsChannel {
     pub(crate) connection: ChannelConnection,
     mouse_mode: MouseMode,
     modifiers: KeyModifiers,
+    buttons_state: u32,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -25,6 +27,20 @@ pub struct KeyModifiers {
     pub ctrl: bool,
     pub alt: bool,
     pub meta: bool,
+}
+
+pub(crate) enum InputCommand {
+    KeyDown(u32),
+    KeyUp(u32),
+    MouseMotion { x: i32, y: i32, buttons: u32 },
+    MousePosition { x: u32, y: u32, buttons: u32 },
+    MouseButton { button: MouseButton, pressed: bool },
+    MouseWheel(i32),
+}
+
+pub(crate) struct InputRequest {
+    pub command: InputCommand,
+    pub response: oneshot::Sender<std::result::Result<(), String>>,
 }
 
 impl InputsChannel {
@@ -49,6 +65,7 @@ impl InputsChannel {
             connection,
             mouse_mode: MouseMode::Server,
             modifiers: KeyModifiers::default(),
+            buttons_state: 0,
         })
     }
 
@@ -76,6 +93,7 @@ impl InputsChannel {
             connection,
             mouse_mode: MouseMode::Server,
             modifiers: KeyModifiers::default(),
+            buttons_state: 0,
         })
     }
 
@@ -106,6 +124,7 @@ impl InputsChannel {
             connection,
             mouse_mode: MouseMode::Server,
             modifiers: KeyModifiers::default(),
+            buttons_state: 0,
         })
     }
 
@@ -169,10 +188,20 @@ impl InputsChannel {
 
     /// Sends a mouse motion event
     pub async fn send_mouse_motion(&mut self, x: i32, y: i32) -> Result<()> {
+        self.send_mouse_motion_with_buttons(x, y, 0).await
+    }
+
+    /// Sends a mouse motion event with the currently pressed buttons.
+    pub async fn send_mouse_motion_with_buttons(
+        &mut self,
+        x: i32,
+        y: i32,
+        buttons_state: u32,
+    ) -> Result<()> {
         let mut data = Vec::new();
         data.extend_from_slice(&x.to_le_bytes());
         data.extend_from_slice(&y.to_le_bytes());
-        data.extend_from_slice(&0u32.to_le_bytes()); // button state
+        data.extend_from_slice(&buttons_state.to_le_bytes());
 
         self.connection
             .send_message(SPICE_MSG_INPUTS_MOUSE_MOTION, &data)
@@ -181,14 +210,34 @@ impl InputsChannel {
         Ok(())
     }
 
+    pub async fn send_mouse_position(
+        &mut self,
+        x: u32,
+        y: u32,
+        buttons_state: u32,
+        display_id: u8,
+    ) -> Result<()> {
+        let mut data = Vec::with_capacity(13);
+        data.extend_from_slice(&x.to_le_bytes());
+        data.extend_from_slice(&y.to_le_bytes());
+        data.extend_from_slice(&buttons_state.to_le_bytes());
+        data.push(display_id);
+
+        self.connection
+            .send_message(SPICE_MSG_INPUTS_MOUSE_POSITION, &data)
+            .await?;
+        debug!("Sent absolute mouse position: ({}, {})", x, y);
+        Ok(())
+    }
+
     /// Sends a mouse button event
     pub async fn send_mouse_button(&mut self, button: MouseButton, pressed: bool) -> Result<()> {
-        let button_mask = match button {
-            MouseButton::Left => SPICE_MOUSE_BUTTON_LEFT,
-            MouseButton::Middle => SPICE_MOUSE_BUTTON_MIDDLE,
-            MouseButton::Right => SPICE_MOUSE_BUTTON_RIGHT,
-            MouseButton::WheelUp => SPICE_MOUSE_BUTTON_WHEEL_UP,
-            MouseButton::WheelDown => SPICE_MOUSE_BUTTON_WHEEL_DOWN,
+        let (button_id, button_mask): (u32, u32) = match button {
+            MouseButton::Left => (1, SPICE_MOUSE_BUTTON_LEFT),
+            MouseButton::Middle => (2, SPICE_MOUSE_BUTTON_MIDDLE),
+            MouseButton::Right => (3, SPICE_MOUSE_BUTTON_RIGHT),
+            MouseButton::WheelUp => (4, SPICE_MOUSE_BUTTON_WHEEL_UP),
+            MouseButton::WheelDown => (5, SPICE_MOUSE_BUTTON_WHEEL_DOWN),
         };
 
         let msg_type = if pressed {
@@ -197,8 +246,12 @@ impl InputsChannel {
             SPICE_MSG_INPUTS_MOUSE_RELEASE
         };
 
-        let mut data = Vec::new();
-        data.extend_from_slice(&button_mask.to_le_bytes());
+        if pressed {
+            self.buttons_state |= button_mask;
+        } else {
+            self.buttons_state &= !button_mask;
+        }
+        let data = encode_mouse_button(button_id, self.buttons_state);
 
         self.connection.send_message(msg_type, &data).await?;
         debug!(
@@ -232,6 +285,54 @@ impl InputsChannel {
         }
     }
 
+    pub(crate) async fn run_with_requests(
+        mut self,
+        mut requests: mpsc::Receiver<InputRequest>,
+    ) -> Result<()> {
+        loop {
+            tokio::select! {
+                incoming = self.connection.read_message() => {
+                    let (header, data) = incoming?;
+                    self.handle_message(&header, &data).await?;
+                }
+                request = requests.recv() => {
+                    let Some(request) = request else {
+                        return Ok(());
+                    };
+                    let result = match request.command {
+                        InputCommand::KeyDown(scancode) => self.send_key_down(scancode).await,
+                        InputCommand::KeyUp(scancode) => self.send_key_up(scancode).await,
+                        InputCommand::MouseMotion { x, y, buttons } => {
+                            self.send_mouse_motion_with_buttons(x, y, buttons).await
+                        }
+                        InputCommand::MousePosition { x, y, buttons } => {
+                            self.send_mouse_position(x, y, buttons, 0).await
+                        }
+                        InputCommand::MouseButton { button, pressed } => {
+                            self.send_mouse_button(button, pressed).await
+                        }
+                        InputCommand::MouseWheel(delta_y) => {
+                            let button = if delta_y > 0 {
+                                Some(MouseButton::WheelUp)
+                            } else if delta_y < 0 {
+                                Some(MouseButton::WheelDown)
+                            } else {
+                                None
+                            };
+                            if let Some(button) = button {
+                                self.send_mouse_button(button, true).await?;
+                                self.send_mouse_button(button, false).await
+                            } else {
+                                Ok(())
+                            }
+                        }
+                    };
+                    let _ = request.response.send(result.map_err(|error| error.to_string()));
+                }
+            }
+        }
+    }
+
     async fn handle_init_message(&mut self, data: &[u8]) -> Result<()> {
         if data.len() >= 2 {
             let modifiers = u16::from_le_bytes([data[0], data[1]]);
@@ -256,6 +357,13 @@ impl InputsChannel {
         }
         Ok(())
     }
+}
+
+fn encode_mouse_button(button_id: u32, buttons_state: u32) -> [u8; 8] {
+    let mut data = [0; 8];
+    data[..4].copy_from_slice(&button_id.to_le_bytes());
+    data[4..].copy_from_slice(&buttons_state.to_le_bytes());
+    data
 }
 
 impl Channel for InputsChannel {
@@ -349,12 +457,12 @@ pub const SPICE_MSG_INPUTS_INIT: u16 = 101;
 pub const SPICE_MSG_INPUTS_KEY_MODIFIERS: u16 = 102;
 
 // Client to server messages
-pub const SPICE_MSG_INPUTS_KEY_DOWN: u16 = 103;
-pub const SPICE_MSG_INPUTS_KEY_UP: u16 = 104;
-pub const SPICE_MSG_INPUTS_MOUSE_MOTION: u16 = 105;
-pub const SPICE_MSG_INPUTS_MOUSE_POSITION: u16 = 106;
-pub const SPICE_MSG_INPUTS_MOUSE_PRESS: u16 = 107;
-pub const SPICE_MSG_INPUTS_MOUSE_RELEASE: u16 = 108;
+pub const SPICE_MSG_INPUTS_KEY_DOWN: u16 = 101;
+pub const SPICE_MSG_INPUTS_KEY_UP: u16 = 102;
+pub const SPICE_MSG_INPUTS_MOUSE_MOTION: u16 = 111;
+pub const SPICE_MSG_INPUTS_MOUSE_POSITION: u16 = 112;
+pub const SPICE_MSG_INPUTS_MOUSE_PRESS: u16 = 113;
+pub const SPICE_MSG_INPUTS_MOUSE_RELEASE: u16 = 114;
 
 // Mouse button masks
 pub const SPICE_MOUSE_BUTTON_LEFT: u32 = 1 << 0;
@@ -457,6 +565,21 @@ fn char_to_scancode(c: char) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_message_ids_match_spice_protocol() {
+        assert_eq!(SPICE_MSG_INPUTS_KEY_DOWN, 101);
+        assert_eq!(SPICE_MSG_INPUTS_KEY_UP, 102);
+        assert_eq!(SPICE_MSG_INPUTS_MOUSE_MOTION, 111);
+        assert_eq!(SPICE_MSG_INPUTS_MOUSE_POSITION, 112);
+        assert_eq!(SPICE_MSG_INPUTS_MOUSE_PRESS, 113);
+        assert_eq!(SPICE_MSG_INPUTS_MOUSE_RELEASE, 114);
+    }
+
+    #[test]
+    fn mouse_button_payload_matches_spice_wire_format() {
+        assert_eq!(encode_mouse_button(1, 5), [1, 0, 0, 0, 5, 0, 0, 0]);
+    }
 
     #[test]
     fn test_key_to_scancode() {

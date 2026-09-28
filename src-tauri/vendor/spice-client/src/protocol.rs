@@ -237,10 +237,10 @@ pub enum DisplayChannelMessage {
 #[brw(little)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct SpiceRect {
-    pub left: i32,
     pub top: i32,
-    pub right: i32,
+    pub left: i32,
     pub bottom: i32,
+    pub right: i32,
 }
 
 #[binrw]
@@ -525,8 +525,8 @@ pub struct SpiceBrush {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpiceClip {
     pub clip_type: u8, // ClipType enum
-    #[br(pad_before = 3)] // 3 bytes padding for alignment before u64
-    #[bw(pad_before = 3)]
+    #[br(pad_after = 3)]
+    #[bw(pad_after = 3)]
     pub data: SpiceAddress, // Address to clip data (RectList or Path)
 }
 
@@ -803,8 +803,6 @@ pub struct SpiceImageDescriptor {
     pub id: u64,
     pub type_: u8, // ImageType enum (BITMAP, QUIC, LZ, GLZ, etc.)
     pub flags: u8, // ImageFlags
-    #[br(pad_before = 2)] // 2 bytes padding for alignment
-    #[bw(pad_before = 2)]
     pub width: u32,
     pub height: u32,
 }
@@ -812,15 +810,16 @@ pub struct SpiceImageDescriptor {
 // Image types
 pub const SPICE_IMAGE_TYPE_BITMAP: u8 = 0;
 pub const SPICE_IMAGE_TYPE_QUIC: u8 = 1;
-pub const SPICE_IMAGE_TYPE_LZ: u8 = 100;
-pub const SPICE_IMAGE_TYPE_GLZ: u8 = 101;
-pub const SPICE_IMAGE_TYPE_FROM_CACHE: u8 = 102;
-pub const SPICE_IMAGE_TYPE_SURFACE: u8 = 103;
-pub const SPICE_IMAGE_TYPE_JPEG: u8 = 104;
-pub const SPICE_IMAGE_TYPE_FROM_CACHE_LOSSLESS: u8 = 105;
-pub const SPICE_IMAGE_TYPE_ZLIB_GLZ_RGB: u8 = 106;
-pub const SPICE_IMAGE_TYPE_JPEG_ALPHA: u8 = 107;
-pub const SPICE_IMAGE_TYPE_LZ4: u8 = 108;
+pub const SPICE_IMAGE_TYPE_LZ_PLT: u8 = 100;
+pub const SPICE_IMAGE_TYPE_LZ: u8 = 101;
+pub const SPICE_IMAGE_TYPE_GLZ: u8 = 102;
+pub const SPICE_IMAGE_TYPE_FROM_CACHE: u8 = 103;
+pub const SPICE_IMAGE_TYPE_SURFACE: u8 = 104;
+pub const SPICE_IMAGE_TYPE_JPEG: u8 = 105;
+pub const SPICE_IMAGE_TYPE_FROM_CACHE_LOSSLESS: u8 = 106;
+pub const SPICE_IMAGE_TYPE_ZLIB_GLZ_RGB: u8 = 107;
+pub const SPICE_IMAGE_TYPE_JPEG_ALPHA: u8 = 108;
+pub const SPICE_IMAGE_TYPE_LZ4: u8 = 109;
 
 // Bitmap format
 pub const SPICE_BITMAP_FMT_1BIT_LE: u8 = 1;

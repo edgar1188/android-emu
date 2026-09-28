@@ -8,6 +8,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "tauri:dev": "tauri dev --no-watch",
     "format": "prettier --write . && cd src-tauri && cargo fmt --all || true"
   },
   "dependencies": {

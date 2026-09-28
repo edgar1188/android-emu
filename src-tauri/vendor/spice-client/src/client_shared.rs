@@ -1,6 +1,6 @@
 use crate::channels::cursor::{CursorChannel, CursorShape};
 use crate::channels::display::DisplayChannel;
-use crate::channels::inputs::InputsChannel;
+use crate::channels::inputs::{InputCommand, InputRequest, InputsChannel};
 use crate::channels::main::MainChannel;
 use crate::channels::MouseButton;
 use crate::error::{Result, SpiceError};
@@ -11,6 +11,8 @@ use instant::Duration;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+#[cfg(not(target_arch = "wasm32"))]
+use tokio::sync::{mpsc, oneshot};
 #[cfg(target_arch = "wasm32")]
 use tracing::warn;
 use tracing::{error, info};
@@ -36,6 +38,9 @@ pub struct SpiceClientInner {
     password: Option<String>,
     main_channel: Option<Arc<Mutex<MainChannel>>>,
     display_channels: HashMap<u8, Arc<Mutex<DisplayChannel>>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    inputs_channels: HashMap<u8, mpsc::Sender<InputRequest>>,
+    #[cfg(target_arch = "wasm32")]
     inputs_channels: HashMap<u8, Arc<Mutex<InputsChannel>>>,
     cursor_channels: HashMap<u8, Arc<Mutex<CursorChannel>>>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -492,9 +497,12 @@ impl SpiceClientShared {
                             session_id,
                         )
                         .await?;
-                        inner
-                            .inputs_channels
-                            .insert(channel_id, Arc::new(Mutex::new(inputs_channel)));
+                        let (sender, receiver) = mpsc::channel(64);
+                        let input_task = tokio::spawn(async move {
+                            inputs_channel.run_with_requests(receiver).await
+                        });
+                        inner.channel_tasks.push(input_task);
+                        inner.inputs_channels.insert(channel_id, sender);
                         info!(
                             "✓ Connected to inputs channel {} with connection_id = {}",
                             channel_id,
@@ -598,19 +606,7 @@ impl SpiceClientShared {
                 info!("Started event loop for display channel {}", channel_id);
             }
 
-            let inputs_channels: Vec<(u8, Arc<Mutex<InputsChannel>>)> = inner
-                .inputs_channels
-                .iter()
-                .map(|(id, ch)| (*id, ch.clone()))
-                .collect();
-            for (channel_id, inputs_channel_arc) in inputs_channels {
-                let inputs_task = tokio::spawn(async move {
-                    let mut inputs_channel = inputs_channel_arc.lock().await;
-                    inputs_channel.run().await
-                });
-                inner.channel_tasks.push(inputs_task);
-                info!("Started event loop for inputs channel {}", channel_id);
-            }
+            info!("Inputs channels remain available for serialized client events");
 
             let cursor_channels: Vec<(u8, Arc<Mutex<CursorChannel>>)> = inner
                 .cursor_channels
@@ -902,48 +898,181 @@ impl SpiceClientShared {
 
     // Input forwarding methods
 
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn send_input_command(&self, channel_id: u8, command: InputCommand) -> Result<()> {
+        let sender = {
+            let inner = self.inner.lock().await;
+            inner
+                .inputs_channels
+                .get(&channel_id)
+                .cloned()
+                .ok_or_else(|| {
+                    SpiceError::Protocol(format!("Inputs channel {} not connected", channel_id))
+                })?
+        };
+
+        let (response, result) = oneshot::channel();
+        sender
+            .send(InputRequest { command, response })
+            .await
+            .map_err(|_| SpiceError::Connection("Inputs channel task stopped".into()))?;
+        result
+            .await
+            .map_err(|_| SpiceError::Connection("Inputs channel task stopped".into()))?
+            .map_err(SpiceError::Protocol)
+    }
+
     /// Sends a key down event to the specified inputs channel.
     pub async fn send_key_down(&self, channel_id: u8, scancode: u32) -> Result<()> {
-        let inner = self.inner.lock().await;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return self
+                .send_input_command(channel_id, InputCommand::KeyDown(scancode))
+                .await;
+        }
 
-        if let Some(inputs_channel_arc) = inner.inputs_channels.get(&channel_id) {
-            let mut inputs_channel = inputs_channel_arc.lock().await;
-            inputs_channel.send_key_down(scancode).await
-        } else {
-            Err(SpiceError::Protocol(format!(
-                "Inputs channel {} not connected",
-                channel_id
-            )))
+        #[cfg(target_arch = "wasm32")]
+        {
+            let inner = self.inner.lock().await;
+
+            if let Some(inputs_channel_arc) = inner.inputs_channels.get(&channel_id) {
+                let mut inputs_channel = inputs_channel_arc.lock().await;
+                inputs_channel.send_key_down(scancode).await
+            } else {
+                Err(SpiceError::Protocol(format!(
+                    "Inputs channel {} not connected",
+                    channel_id
+                )))
+            }
         }
     }
 
     /// Sends a key up event to the specified inputs channel.
     pub async fn send_key_up(&self, channel_id: u8, scancode: u32) -> Result<()> {
-        let inner = self.inner.lock().await;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return self
+                .send_input_command(channel_id, InputCommand::KeyUp(scancode))
+                .await;
+        }
 
-        if let Some(inputs_channel_arc) = inner.inputs_channels.get(&channel_id) {
-            let mut inputs_channel = inputs_channel_arc.lock().await;
-            inputs_channel.send_key_up(scancode).await
-        } else {
-            Err(SpiceError::Protocol(format!(
-                "Inputs channel {} not connected",
-                channel_id
-            )))
+        #[cfg(target_arch = "wasm32")]
+        {
+            let inner = self.inner.lock().await;
+
+            if let Some(inputs_channel_arc) = inner.inputs_channels.get(&channel_id) {
+                let mut inputs_channel = inputs_channel_arc.lock().await;
+                inputs_channel.send_key_up(scancode).await
+            } else {
+                Err(SpiceError::Protocol(format!(
+                    "Inputs channel {} not connected",
+                    channel_id
+                )))
+            }
         }
     }
 
     /// Sends a mouse motion event to the specified inputs channel.
     pub async fn send_mouse_motion(&self, channel_id: u8, x: i32, y: i32) -> Result<()> {
-        let inner = self.inner.lock().await;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return self
+                .send_input_command(channel_id, InputCommand::MouseMotion { x, y, buttons: 0 })
+                .await;
+        }
 
-        if let Some(inputs_channel_arc) = inner.inputs_channels.get(&channel_id) {
-            let mut inputs_channel = inputs_channel_arc.lock().await;
-            inputs_channel.send_mouse_motion(x, y).await
-        } else {
-            Err(SpiceError::Protocol(format!(
-                "Inputs channel {} not connected",
-                channel_id
-            )))
+        #[cfg(target_arch = "wasm32")]
+        {
+            let inner = self.inner.lock().await;
+
+            if let Some(inputs_channel_arc) = inner.inputs_channels.get(&channel_id) {
+                let mut inputs_channel = inputs_channel_arc.lock().await;
+                inputs_channel.send_mouse_motion(x, y).await
+            } else {
+                Err(SpiceError::Protocol(format!(
+                    "Inputs channel {} not connected",
+                    channel_id
+                )))
+            }
+        }
+    }
+
+    /// Sends mouse motion with the current button state to the specified inputs channel.
+    pub async fn send_mouse_motion_with_buttons(
+        &self,
+        channel_id: u8,
+        x: i32,
+        y: i32,
+        buttons_state: u32,
+    ) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return self
+                .send_input_command(
+                    channel_id,
+                    InputCommand::MouseMotion {
+                        x,
+                        y,
+                        buttons: buttons_state,
+                    },
+                )
+                .await;
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let inner = self.inner.lock().await;
+
+            if let Some(inputs_channel_arc) = inner.inputs_channels.get(&channel_id) {
+                let mut inputs_channel = inputs_channel_arc.lock().await;
+                inputs_channel
+                    .send_mouse_motion_with_buttons(x, y, buttons_state)
+                    .await
+            } else {
+                Err(SpiceError::Protocol(format!(
+                    "Inputs channel {} not connected",
+                    channel_id
+                )))
+            }
+        }
+    }
+
+    pub async fn send_mouse_position(
+        &self,
+        channel_id: u8,
+        x: u32,
+        y: u32,
+        buttons_state: u32,
+    ) -> Result<()> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return self
+                .send_input_command(
+                    channel_id,
+                    InputCommand::MousePosition {
+                        x,
+                        y,
+                        buttons: buttons_state,
+                    },
+                )
+                .await;
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        {
+            let inner = self.inner.lock().await;
+
+            if let Some(inputs_channel_arc) = inner.inputs_channels.get(&channel_id) {
+                let mut inputs_channel = inputs_channel_arc.lock().await;
+                inputs_channel
+                    .send_mouse_position(x, y, buttons_state, 0)
+                    .await
+            } else {
+                Err(SpiceError::Protocol(format!(
+                    "Inputs channel {} not connected",
+                    channel_id
+                )))
+            }
         }
     }
 
@@ -954,16 +1083,26 @@ impl SpiceClientShared {
         button: MouseButton,
         pressed: bool,
     ) -> Result<()> {
-        let inner = self.inner.lock().await;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return self
+                .send_input_command(channel_id, InputCommand::MouseButton { button, pressed })
+                .await;
+        }
 
-        if let Some(inputs_channel_arc) = inner.inputs_channels.get(&channel_id) {
-            let mut inputs_channel = inputs_channel_arc.lock().await;
-            inputs_channel.send_mouse_button(button, pressed).await
-        } else {
-            Err(SpiceError::Protocol(format!(
-                "Inputs channel {} not connected",
-                channel_id
-            )))
+        #[cfg(target_arch = "wasm32")]
+        {
+            let inner = self.inner.lock().await;
+
+            if let Some(inputs_channel_arc) = inner.inputs_channels.get(&channel_id) {
+                let mut inputs_channel = inputs_channel_arc.lock().await;
+                inputs_channel.send_mouse_button(button, pressed).await
+            } else {
+                Err(SpiceError::Protocol(format!(
+                    "Inputs channel {} not connected",
+                    channel_id
+                )))
+            }
         }
     }
 
@@ -974,33 +1113,43 @@ impl SpiceClientShared {
         _delta_x: i32,
         delta_y: i32,
     ) -> Result<()> {
-        let inner = self.inner.lock().await;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return self
+                .send_input_command(channel_id, InputCommand::MouseWheel(delta_y))
+                .await;
+        }
 
-        if let Some(inputs_channel_arc) = inner.inputs_channels.get(&channel_id) {
-            let mut inputs_channel = inputs_channel_arc.lock().await;
-            // Convert wheel deltas to button presses (SPICE protocol uses button events for wheel)
-            if delta_y > 0 {
-                inputs_channel
-                    .send_mouse_button(MouseButton::WheelUp, true)
-                    .await?;
-                inputs_channel
-                    .send_mouse_button(MouseButton::WheelUp, false)
-                    .await
-            } else if delta_y < 0 {
-                inputs_channel
-                    .send_mouse_button(MouseButton::WheelDown, true)
-                    .await?;
-                inputs_channel
-                    .send_mouse_button(MouseButton::WheelDown, false)
-                    .await
+        #[cfg(target_arch = "wasm32")]
+        {
+            let inner = self.inner.lock().await;
+
+            if let Some(inputs_channel_arc) = inner.inputs_channels.get(&channel_id) {
+                let mut inputs_channel = inputs_channel_arc.lock().await;
+                // Convert wheel deltas to button presses (SPICE protocol uses button events for wheel)
+                if delta_y > 0 {
+                    inputs_channel
+                        .send_mouse_button(MouseButton::WheelUp, true)
+                        .await?;
+                    inputs_channel
+                        .send_mouse_button(MouseButton::WheelUp, false)
+                        .await
+                } else if delta_y < 0 {
+                    inputs_channel
+                        .send_mouse_button(MouseButton::WheelDown, true)
+                        .await?;
+                    inputs_channel
+                        .send_mouse_button(MouseButton::WheelDown, false)
+                        .await
+                } else {
+                    Ok(())
+                }
             } else {
-                Ok(())
+                Err(SpiceError::Protocol(format!(
+                    "Inputs channel {} not connected",
+                    channel_id
+                )))
             }
-        } else {
-            Err(SpiceError::Protocol(format!(
-                "Inputs channel {} not connected",
-                channel_id
-            )))
         }
     }
 

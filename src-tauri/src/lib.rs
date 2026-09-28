@@ -39,6 +39,10 @@ pub fn run() {
             spice::spice_connect,
             spice::spice_disconnect,
             spice::spice_frame,
+            spice::spice_key,
+            spice::spice_mouse_button,
+            spice::spice_mouse_motion,
+            spice::spice_mouse_wheel,
             spice::spice_probe,
             titlebar::sync_theme
         ])

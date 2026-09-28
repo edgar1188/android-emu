@@ -551,6 +551,10 @@ impl DisplayChannel {
                 let bitmap_data = &data[bitmap_data_offset..];
                 self.decode_bitmap(&bitmap, bitmap_data, descriptor.width, descriptor.height)
             }
+            SPICE_IMAGE_TYPE_QUIC => {
+                let compressed_data = &image_data[cursor.position() as usize..];
+                self.decode_quic(compressed_data, descriptor.width, descriptor.height)
+            }
             SPICE_IMAGE_TYPE_LZ4 => {
                 // Decompress LZ4 data
                 let compressed_data = &image_data[cursor.position() as usize..];
@@ -564,7 +568,11 @@ impl DisplayChannel {
             SPICE_IMAGE_TYPE_LZ => {
                 // Decompress LZ data (SPICE custom LZ format)
                 let compressed_data = &image_data[cursor.position() as usize..];
-                self.decode_lz(compressed_data, descriptor.width, descriptor.height)
+                self.decode_lz(
+                    strip_lz_data_size_prefix(compressed_data),
+                    descriptor.width,
+                    descriptor.height,
+                )
             }
             SPICE_IMAGE_TYPE_ZLIB_GLZ_RGB => {
                 // Decompress zlib data
@@ -771,14 +779,38 @@ impl DisplayChannel {
     /// This is a simplified implementation - full LZ support would require implementing the SPICE LZ algorithm
     fn decode_lz(
         &self,
-        _compressed_data: &[u8],
-        _width: u32,
-        _height: u32,
+        compressed_data: &[u8],
+        width: u32,
+        height: u32,
     ) -> Result<Option<(Vec<u8>, u32, u32)>> {
-        // TODO: Implement SPICE LZ decompression algorithm
-        // For now, return None to fall back to test pattern
-        warn!("LZ decompression not yet implemented");
-        Ok(None)
+        let decoded =
+            shakenfist_spice_compression::decompress_lz(compressed_data).map_err(|error| {
+                SpiceError::Protocol(format!("Failed to decompress SPICE LZ: {error}"))
+            })?;
+
+        if decoded.width != width || decoded.height != height {
+            return Err(SpiceError::Protocol(format!(
+                "SPICE LZ dimensions {}x{} do not match image descriptor {}x{}",
+                decoded.width, decoded.height, width, height
+            )));
+        }
+
+        Ok(Some((decoded.pixels, decoded.width, decoded.height)))
+    }
+
+    fn decode_quic(
+        &self,
+        compressed_data: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<Option<(Vec<u8>, u32, u32)>> {
+        let Some(pixels) =
+            shakenfist_spice_compression::quic_decode(compressed_data, width, height)
+        else {
+            return Ok(None);
+        };
+
+        Ok(Some((pixels, width, height)))
     }
 
     /// Decode zlib compressed image
@@ -889,6 +921,16 @@ impl DisplayChannel {
             }
             x if x == DisplayChannelMessage::DrawCopy as u16 => {
                 debug!("Handle draw copy");
+                eprintln!(
+                    "draw bytes: {}",
+                    data.iter()
+                        .take(140)
+                        .enumerate()
+                        .map(|(index, byte)| format!("{index:03}:{byte:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
+                eprintln!("DRAW_COPY bytes: {:02x?}", &data[..data.len().min(140)]);
 
                 // Log raw data for debugging
                 if data.len() < 100 {
@@ -903,6 +945,11 @@ impl DisplayChannel {
                 // Parse the draw copy message
                 let mut cursor = std::io::Cursor::new(data);
                 if let Ok(draw_copy) = SpiceDrawCopy::read(&mut cursor) {
+                    eprintln!(
+                        "parsed DrawCopy end={} src_image=0x{:x}",
+                        cursor.position(),
+                        draw_copy.data.src_image
+                    );
                     let surface_id = draw_copy.base.surface_id;
                     let bbox = &draw_copy.base.box_;
                     let src_area = &draw_copy.data.src_area;
@@ -913,7 +960,12 @@ impl DisplayChannel {
                           draw_copy.data.src_image);
 
                     let image_address = if draw_copy.data.src_image > 0xFFFFFFFF {
-                        cursor.position() as u64
+                        let inline_address = draw_copy.base.clip.data;
+                        if inline_address < data.len() as u64 {
+                            inline_address
+                        } else {
+                            cursor.position() as u64
+                        }
                     } else {
                         draw_copy.data.src_image
                     };
@@ -930,14 +982,32 @@ impl DisplayChannel {
                                 let image_stride = img_width as usize * bytes_per_pixel;
 
                                 // Calculate source rectangle bounds
-                                let src_left = src_area.left.min(src_area.right).max(0) as usize;
-                                let src_top = src_area.top.min(src_area.bottom).max(0) as usize;
-                                let src_right =
-                                    src_area.left.max(src_area.right).min(img_width as i32)
-                                        as usize;
-                                let src_bottom =
-                                    src_area.top.max(src_area.bottom).min(img_height as i32)
-                                        as usize;
+                                let source_area = if src_area.left == src_area.right
+                                    || src_area.top == src_area.bottom
+                                {
+                                    SpiceRect {
+                                        left: 0,
+                                        top: 0,
+                                        right: img_width as i32,
+                                        bottom: img_height as i32,
+                                    }
+                                } else {
+                                    *src_area
+                                };
+                                let src_left =
+                                    source_area.left.min(source_area.right).max(0) as usize;
+                                let src_top =
+                                    source_area.top.min(source_area.bottom).max(0) as usize;
+                                let src_right = source_area
+                                    .left
+                                    .max(source_area.right)
+                                    .min(img_width as i32)
+                                    as usize;
+                                let src_bottom = source_area
+                                    .top
+                                    .max(source_area.bottom)
+                                    .min(img_height as i32)
+                                    as usize;
 
                                 // Calculate destination bounds
                                 let dst_left = bbox.left.max(0) as usize;
@@ -2112,11 +2182,59 @@ impl Channel for DisplayChannel {
     }
 }
 
+fn strip_lz_data_size_prefix(data: &[u8]) -> &[u8] {
+    if data.len() < 4 {
+        return data;
+    }
+
+    let declared_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    if declared_len == data.len() - 4 {
+        &data[4..]
+    } else {
+        data
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use binrw::BinWrite;
     use std::io::Cursor;
+
+    #[test]
+    fn parses_clip_address_before_trailing_alignment() {
+        let bytes = [0, 0x39, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        let clip = SpiceClip::read(&mut Cursor::new(bytes)).unwrap();
+
+        assert_eq!(clip.data, 57);
+    }
+
+    #[test]
+    fn strips_lz_data_size_prefix() {
+        assert_eq!(
+            strip_lz_data_size_prefix(&[3, 0, 0, 0, 1, 2, 3]),
+            &[1, 2, 3]
+        );
+        assert_eq!(strip_lz_data_size_prefix(&[1, 2, 3]), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn test_lz_image_decompression_returns_rgba_pixels() {
+        let mut compressed = Vec::from(&b"  ZL"[..]);
+        compressed.extend_from_slice(&1_u16.to_be_bytes());
+        compressed.extend_from_slice(&0_u16.to_be_bytes());
+        compressed.extend_from_slice(&[0; 3]);
+        compressed.push(0);
+        for value in [1_u32, 1, 3, 1] {
+            compressed.extend_from_slice(&value.to_be_bytes());
+        }
+        compressed.extend_from_slice(&[0, 0x33, 0x22, 0x11]);
+
+        let decoded = shakenfist_spice_compression::decompress_lz(&compressed).unwrap();
+
+        assert_eq!((decoded.width, decoded.height), (1, 1));
+        assert_eq!(decoded.pixels, [0x11, 0x22, 0x33, 255]);
+    }
 
     #[test]
     fn test_copy_bits_message_parsing() {

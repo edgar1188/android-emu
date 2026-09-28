@@ -309,10 +309,10 @@ fn test_spice_msg_main_init_serialization() {
 #[test]
 fn test_spice_rect_serialization() {
     let rect = SpiceRect {
-        left: -100,
         top: -50,
-        right: 1024,
+        left: -100,
         bottom: 768,
+        right: 1024,
     };
 
     // Write to bytes
@@ -321,20 +321,16 @@ fn test_spice_rect_serialization() {
     let bytes = cursor.into_inner();
     assert_eq!(bytes.len(), 16); // 4 i32 values
 
-    // Verify field order in serialized data
-    let left_bytes = (-100i32).to_le_bytes();
+    // RECT is serialized as top, left, bottom, right.
     let top_bytes = (-50i32).to_le_bytes();
-    let right_bytes = (1024i32).to_le_bytes();
+    let left_bytes = (-100i32).to_le_bytes();
     let bottom_bytes = (768i32).to_le_bytes();
+    let right_bytes = (1024i32).to_le_bytes();
 
-    assert_eq!(&bytes[0..4], &left_bytes, "left field should be first");
-    assert_eq!(&bytes[4..8], &top_bytes, "top field should be second");
-    assert_eq!(&bytes[8..12], &right_bytes, "right field should be third");
-    assert_eq!(
-        &bytes[12..16],
-        &bottom_bytes,
-        "bottom field should be fourth"
-    );
+    assert_eq!(&bytes[0..4], &top_bytes);
+    assert_eq!(&bytes[4..8], &left_bytes);
+    assert_eq!(&bytes[8..12], &bottom_bytes);
+    assert_eq!(&bytes[12..16], &right_bytes);
 
     // Read back
     let mut cursor = Cursor::new(&bytes);
