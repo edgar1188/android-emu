@@ -332,7 +332,7 @@ impl DisplayChannel {
     pub fn get_primary_surface(&self) -> Option<&DisplaySurface> {
         let surface = self.surfaces.get(&0);
         if surface.is_none() {
-            eprintln!(
+            debug!(
                 "DisplayChannel: No primary surface available. Total surfaces: {}",
                 self.surfaces.len()
             );
@@ -839,16 +839,13 @@ impl DisplayChannel {
             "DisplayChannel: Starting event loop for channel {}",
             self.connection.channel_id
         );
-        eprintln!("DisplayChannel: Entering message read loop");
         loop {
-            eprintln!("DisplayChannel: Waiting for message...");
             match self.connection.read_message().await {
                 Ok((header, data)) => {
-                    eprintln!("DisplayChannel: Got message!");
                     self.handle_message(&header, &data).await?;
                 }
                 Err(e) => {
-                    eprintln!("DisplayChannel: Error reading message: {e}");
+                    error!("DisplayChannel: Error reading message: {e}");
                     return Err(e);
                 }
             }
@@ -866,10 +863,6 @@ impl DisplayChannel {
             info!("Display mode: {}x{}, format: {}", width, height, format);
 
             // Create primary surface (ID 0)
-            eprintln!(
-                "DisplayChannel: Creating primary surface {}x{} format {}",
-                width, height, format
-            );
             self.surfaces.insert(
                 0,
                 DisplaySurface {
@@ -921,47 +914,22 @@ impl DisplayChannel {
             }
             x if x == DisplayChannelMessage::DrawCopy as u16 => {
                 debug!("Handle draw copy");
-                eprintln!(
-                    "draw bytes: {}",
-                    data.iter()
-                        .take(140)
-                        .enumerate()
-                        .map(|(index, byte)| format!("{index:03}:{byte:02x}"))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                );
-                eprintln!("DRAW_COPY bytes: {:02x?}", &data[..data.len().min(140)]);
-
-                // Log raw data for debugging
-                if data.len() < 100 {
-                    debug!("DrawCopy raw data (hex): {:02x?}", data);
-                } else {
-                    debug!(
-                        "DrawCopy raw data first 100 bytes (hex): {:02x?}",
-                        &data[..100]
-                    );
-                }
 
                 // Parse the draw copy message
                 let mut cursor = std::io::Cursor::new(data);
                 if let Ok(draw_copy) = SpiceDrawCopy::read(&mut cursor) {
-                    eprintln!(
-                        "parsed DrawCopy end={} src_image=0x{:x}",
-                        cursor.position(),
-                        draw_copy.data.src_image
-                    );
                     let surface_id = draw_copy.base.surface_id;
                     let bbox = &draw_copy.base.box_;
                     let src_area = &draw_copy.data.src_area;
 
-                    info!("DrawCopy on surface {} - rect: ({},{}) to ({},{}) from src rect ({},{}) to ({},{}) src_image: 0x{:x}", 
+                    debug!("DrawCopy on surface {} - rect: ({},{}) to ({},{}) from src rect ({},{}) to ({},{}) src_image: 0x{:x}",
                           surface_id, bbox.left, bbox.top, bbox.right, bbox.bottom,
                           src_area.left, src_area.top, src_area.right, src_area.bottom,
                           draw_copy.data.src_image);
 
                     let image_address = if draw_copy.data.src_image > 0xFFFFFFFF {
                         let inline_address = draw_copy.base.clip.data;
-                        if inline_address < data.len() as u64 {
+                        if inline_address > 0 && inline_address < data.len() as u64 {
                             inline_address
                         } else {
                             cursor.position() as u64
@@ -1809,25 +1777,6 @@ impl DisplayChannel {
 
 impl Channel for DisplayChannel {
     async fn handle_message(&mut self, header: &SpiceDataHeader, data: &[u8]) -> Result<()> {
-        eprintln!(
-            "DisplayChannel: Received message type {} with {} bytes",
-            header.msg_type,
-            data.len()
-        );
-
-        // Log specific message types for debugging
-        match header.msg_type {
-            101 => eprintln!("  -> SPICE_MSG_DISPLAY_MODE"),
-            318 => eprintln!("  -> SPICE_MSG_DISPLAY_SURFACE_CREATE"),
-            319 => eprintln!("  -> SPICE_MSG_DISPLAY_SURFACE_DESTROY"),
-            122 => eprintln!("  -> SPICE_MSG_DISPLAY_STREAM_CREATE"),
-            123 => eprintln!("  -> SPICE_MSG_DISPLAY_STREAM_DATA"),
-            125 => eprintln!("  -> SPICE_MSG_DISPLAY_STREAM_DESTROY"),
-            302 => eprintln!("  -> SPICE_MSG_DISPLAY_DRAW_FILL"),
-            304 => eprintln!("  -> SPICE_MSG_DISPLAY_DRAW_COPY"),
-            _ => {}
-        }
-
         match header.msg_type {
             x if x == DisplayChannelMessage::Mode as u16 => {
                 debug!("Received display mode");
@@ -1998,16 +1947,14 @@ impl Channel for DisplayChannel {
             }
             3 => {
                 // SPICE_MSG_SET_ACK
-                eprintln!("DisplayChannel: Received SET_ACK message");
                 // Parse the generation number
                 if data.len() >= 4 {
                     let generation = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                    eprintln!("DisplayChannel: SET_ACK generation: {generation}");
 
                     // Send ACK_SYNC response
                     let ack_data = generation.to_le_bytes();
                     self.connection.send_message(1, &ack_data).await?; // SPICE_MSGC_ACK_SYNC
-                    eprintln!("DisplayChannel: Sent ACK_SYNC response");
+                    debug!("DisplayChannel: Sent ACK_SYNC for generation {generation}");
                 }
             }
             x if x == SPICE_MSG_DISPLAY_COPY_BITS => {

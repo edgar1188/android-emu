@@ -161,8 +161,13 @@ fn normalize_surface_pixels(surface: &spice_client::channels::display::DisplaySu
         1 | 8 | 32 => {
             let mut rgba = Vec::with_capacity(pixel_count * 4);
             for chunk in surface.data.chunks_exact(4) {
-                let [b, g, r, a] = [chunk[0], chunk[1], chunk[2], chunk[3]];
-                rgba.extend_from_slice(&[r, g, b, a]);
+                let [r, g, b, source_alpha] = [chunk[0], chunk[1], chunk[2], chunk[3]];
+                let alpha = if matches!(surface.format, 1 | 32) {
+                    255
+                } else {
+                    source_alpha
+                };
+                rgba.extend_from_slice(&[r, g, b, alpha]);
             }
             rgba
         }
@@ -411,12 +416,12 @@ mod tests {
     }
 
     #[test]
-    fn converts_bgra_to_rgba() {
+    fn preserves_rgba_surface_pixels() {
         let surface = DisplaySurface {
             width: 1,
             height: 1,
-            format: 32,
-            data: vec![0x00, 0x00, 0xFF, 0xFF],
+            format: 8,
+            data: vec![0xFF, 0x00, 0x00, 0xFF],
         };
 
         let pixels = normalize_surface_pixels(&surface);
@@ -424,15 +429,28 @@ mod tests {
     }
 
     #[test]
-    fn converts_spice_xrgb_surface_to_rgba() {
+    fn forces_opaque_alpha_for_spice_xrgb_format_32() {
+        let surface = DisplaySurface {
+            width: 1,
+            height: 1,
+            format: 32,
+            data: vec![0xFF, 0x00, 0x00, 0x00],
+        };
+
+        let pixels = normalize_surface_pixels(&surface);
+        assert_eq!(pixels, vec![255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn converts_spice_xrgb_surface_to_opaque_rgba() {
         let surface = DisplaySurface {
             width: 1,
             height: 1,
             format: 1,
-            data: vec![0x00, 0x00, 0xFF, 0x00],
+            data: vec![0xFF, 0x00, 0x00, 0x00],
         };
 
         let pixels = normalize_surface_pixels(&surface);
-        assert_eq!(pixels, vec![255, 0, 0, 0]);
+        assert_eq!(pixels, vec![255, 0, 0, 255]);
     }
 }

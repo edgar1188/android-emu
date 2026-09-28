@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { CheckCircle, RefreshCw, Wifi, XCircle } from '@lucide/vue'
 
@@ -14,10 +14,16 @@ const endpoint = ref('127.0.0.1:5556')
 const result = ref<SpiceProbeResult | null>(null)
 const errorMessage = ref('')
 const isConnecting = ref(false)
+let retryTimer: ReturnType<typeof setTimeout> | undefined
+let retryAttempt = 0
+let isUnmounted = false
 const emit = defineEmits<{
     frame: [frame: ArrayBuffer]
 }>()
 async function connectVideo() {
+    if (isConnecting.value || isUnmounted) return
+    if (retryTimer) clearTimeout(retryTimer)
+    retryTimer = undefined
     isConnecting.value = true
     result.value = null
     errorMessage.value = ''
@@ -32,14 +38,27 @@ async function connectVideo() {
             minorVersion: 2,
             messageSize: 0,
         }
+        retryAttempt = 0
     } catch (error) {
         errorMessage.value = String(error)
+        if (!isUnmounted && retryAttempt < 4) {
+            retryAttempt += 1
+            retryTimer = setTimeout(() => {
+                retryTimer = undefined
+                void connectVideo()
+            }, retryAttempt * 1000)
+        }
     } finally {
         isConnecting.value = false
     }
 }
+onMounted(() => {
+    void connectVideo()
+})
 
 onUnmounted(() => {
+    isUnmounted = true
+    if (retryTimer) clearTimeout(retryTimer)
     void invoke('spice_disconnect').catch(() => undefined)
 })
 

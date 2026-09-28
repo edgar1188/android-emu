@@ -10,6 +10,7 @@ const displayFrame = ref<HTMLDivElement | null>(null)
 const displayCanvas = ref<HTMLCanvasElement | null>(null)
 const inputError = ref('')
 const frameError = ref('')
+const framesDrawn = ref(0)
 const pressedKeys = new Set<number>()
 const pressedButtons = new Set<number>()
 let lastPointerPosition: { x: number; y: number } | null = null
@@ -197,6 +198,7 @@ async function updateFrame(buffer: ArrayBuffer) {
   }
   const pixels = new Uint8ClampedArray(buffer, 8, pixelLength)
   context.putImageData(new ImageData(pixels, width, height), 0, 0)
+  framesDrawn.value += 1
   frameError.value = ''
 }
 
@@ -239,7 +241,7 @@ onUnmounted(() => {
             @keyup="onKeyUp">
             <canvas ref="displayCanvas" :width="frameSize.width" :height="frameSize.height" role="img"
               aria-label="Pantalla de Android" />
-            <span>{{ frameSize.width }} x {{ frameSize.height }}</span>
+            <span>{{ frameSize.width }} x {{ frameSize.height }} · {{ framesDrawn }} frames</span>
             <small v-if="inputError" class="input-error" role="alert">{{ inputError }}</small>
             <small v-if="frameError" class="input-error" role="alert">{{ frameError }}</small>
           </div>
