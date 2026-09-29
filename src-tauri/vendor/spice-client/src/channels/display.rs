@@ -842,7 +842,12 @@ impl DisplayChannel {
         loop {
             match self.connection.read_message().await {
                 Ok((header, data)) => {
-                    self.handle_message(&header, &data).await?;
+                    if let Err(error) = self.handle_message(&header, &data).await {
+                        error!(
+                            "DisplayChannel {}: discarded message type {} after processing error: {}",
+                            self.connection.channel_id, header.msg_type, error
+                        );
+                    }
                 }
                 Err(e) => {
                     error!("DisplayChannel: Error reading message: {e}");

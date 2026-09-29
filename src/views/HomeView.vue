@@ -16,6 +16,7 @@ const pressedButtons = new Set<number>()
 let lastPointerPosition: { x: number; y: number } | null = null
 let inputQueue: Promise<unknown> = Promise.resolve()
 let frameRevision = 0
+let reusableFrame: ImageData | undefined
 let pendingMotion: { x: number; y: number; absoluteX: number; absoluteY: number; buttons: number } | null = null
 let motionFrame = 0
 
@@ -165,41 +166,54 @@ function releaseInputs() {
 }
 
 async function updateFrame(buffer: ArrayBuffer) {
-  if (buffer.byteLength < 8) {
+  if (buffer.byteLength < 12) {
     frameError.value = 'El frame SPICE recibido está incompleto.'
     return
   }
 
   const header = new DataView(buffer)
-  const width = header.getUint32(0, true)
-  const height = header.getUint32(4, true)
+  const frameId = header.getUint32(0, true)
+  const width = header.getUint32(4, true)
+  const height = header.getUint32(8, true)
   const pixelLength = width * height * 4
-  if (!width || !height || buffer.byteLength !== 8 + pixelLength) {
-    frameError.value = 'El frame SPICE tiene dimensiones o datos inválidos.'
-    return
+  try {
+    if (!width || !height || buffer.byteLength !== 12 + pixelLength) {
+      frameError.value = 'El frame SPICE tiene dimensiones o datos inválidos.'
+      return
+    }
+
+    const revision = ++frameRevision
+    const dimensionsChanged = frameSize.value.width !== width || frameSize.value.height !== height
+    if (dimensionsChanged) {
+      frameSize.value = { width, height }
+      await nextTick()
+    }
+
+    const canvas = displayCanvas.value
+    const context = canvas?.getContext('2d', { alpha: false })
+    if (!canvas || !context) {
+      frameError.value = 'No se pudo inicializar el canvas de vídeo.'
+      return
+    }
+
+    if (revision !== frameRevision) return
+
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width
+      canvas.height = height
+    }
+    if (!reusableFrame || reusableFrame.width !== width || reusableFrame.height !== height) {
+      reusableFrame = new ImageData(width, height)
+    }
+    reusableFrame.data.set(new Uint8ClampedArray(buffer, 12, pixelLength))
+    context.putImageData(reusableFrame, 0, 0)
+    framesDrawn.value += 1
+    frameError.value = ''
+  } finally {
+    await invoke('spice_frame_ack', { frameId }).catch((error: unknown) => {
+      frameError.value = String(error)
+    })
   }
-
-  const revision = ++frameRevision
-  frameSize.value = { width, height }
-  await nextTick()
-
-  const canvas = displayCanvas.value
-  const context = canvas?.getContext('2d', { alpha: false })
-  if (!canvas || !context) {
-    frameError.value = 'No se pudo inicializar el canvas de vídeo.'
-    return
-  }
-
-  if (revision !== frameRevision) return
-
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width
-    canvas.height = height
-  }
-  const pixels = new Uint8ClampedArray(buffer, 8, pixelLength)
-  context.putImageData(new ImageData(pixels, width, height), 0, 0)
-  framesDrawn.value += 1
-  frameError.value = ''
 }
 
 function onPointerCancel() {

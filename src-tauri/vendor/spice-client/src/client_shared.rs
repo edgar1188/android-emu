@@ -606,7 +606,14 @@ impl SpiceClientShared {
             for (channel_id, display_channel_arc) in display_channels {
                 let display_task = tokio::spawn(async move {
                     let mut display_channel = display_channel_arc.lock().await;
-                    display_channel.run().await
+                    let result = display_channel.run().await;
+                    if let Err(error) = &result {
+                        error!(
+                            "Display channel {} event loop stopped: {}",
+                            channel_id, error
+                        );
+                    }
+                    result
                 });
                 inner.channel_tasks.push(display_task);
                 info!("Started event loop for display channel {}", channel_id);
