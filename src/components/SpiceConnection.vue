@@ -17,6 +17,7 @@ const isConnecting = ref(false)
 let retryTimer: ReturnType<typeof setTimeout> | undefined
 let retryAttempt = 0
 let isUnmounted = false
+let activeFrameChannel: Channel<ArrayBuffer> | undefined
 const emit = defineEmits<{
     frame: [frame: ArrayBuffer]
 }>()
@@ -29,9 +30,10 @@ async function connectVideo() {
     errorMessage.value = ''
 
     try {
-        const onFrame = new Channel<ArrayBuffer>()
-        onFrame.onmessage = (frame) => emit('frame', frame)
-        await invoke('spice_connect', { endpoint: endpoint.value.trim(), onFrame })
+        const frameChannel = new Channel<ArrayBuffer>()
+        frameChannel.onmessage = (frame) => emit('frame', frame)
+        activeFrameChannel = frameChannel
+        await invoke('spice_connect', { endpoint: endpoint.value.trim(), onFrame: frameChannel })
         result.value = {
             transport: 'tcp',
             majorVersion: 2,
@@ -40,6 +42,7 @@ async function connectVideo() {
         }
         retryAttempt = 0
     } catch (error) {
+        activeFrameChannel = undefined
         errorMessage.value = String(error)
         if (!isUnmounted && retryAttempt < 4) {
             retryAttempt += 1
@@ -59,7 +62,12 @@ onMounted(() => {
 onUnmounted(() => {
     isUnmounted = true
     if (retryTimer) clearTimeout(retryTimer)
-    void invoke('spice_disconnect').catch(() => undefined)
+    const frameChannel = activeFrameChannel
+    void invoke('spice_disconnect')
+        .catch(() => undefined)
+        .finally(() => {
+            if (activeFrameChannel === frameChannel) activeFrameChannel = undefined
+        })
 })
 
 </script>

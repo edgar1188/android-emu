@@ -5,12 +5,11 @@ use std::time::Duration;
 use serde::Serialize;
 use spice_client::channels::MouseButton;
 use spice_client::SpiceClientShared;
-use std::sync::{Arc, Mutex as StdMutex};
 use tauri::{
     ipc::{Channel, InvokeResponseBody},
     State,
 };
-use tokio::sync::Notify;
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::SpiceAppState;
@@ -220,33 +219,28 @@ pub async fn spice_connect(
         .await
         .map_err(|error| format!("No se pudo abrir los canales SPICE: {error}"))?;
 
-    let latest_frame = Arc::new(StdMutex::new(None));
-    let frame_notify = Arc::new(Notify::new());
-    let callback_frame = Arc::clone(&latest_frame);
-    let callback_notify = Arc::clone(&frame_notify);
+    let (frame_tx, mut frame_rx) = watch::channel(None);
     client
         .set_display_update_callback(0, move |surface| {
-            let Ok(mut latest) = callback_frame.lock() else {
-                return;
-            };
-            *latest = Some(surface.clone());
-            drop(latest);
-            callback_notify.notify_one();
+            frame_tx.send_replace(Some(surface.clone()));
         })
         .await
         .map_err(|error| format!("No se pudo registrar la actualización de vídeo: {error}"))?;
 
-    let worker_frame = Arc::clone(&latest_frame);
-    let worker_notify = Arc::clone(&frame_notify);
     let frame_task = tokio::spawn(async move {
+        let mut refresh = tokio::time::interval(Duration::from_millis(33));
+        refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
         loop {
-            let notified = worker_notify.notified();
-            let surface = match worker_frame.lock() {
-                Ok(mut latest) => latest.take(),
-                Err(poisoned) => poisoned.into_inner().take(),
-            };
+            refresh.tick().await;
+            match frame_rx.has_changed() {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(_) => break,
+            }
+
+            let surface = frame_rx.borrow_and_update().clone();
             let Some(surface) = surface else {
-                notified.await;
                 continue;
             };
 
