@@ -3,53 +3,61 @@ import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { Activity, Monitor } from '@lucide/vue'
 import Navbar from '../components/Navbar.vue'
-import SpiceConnection from '../components/SpiceConnection.vue'
+import AdbConnection from '../components/AdbConnection.vue'
 
 const frameSize = ref({ width: 0, height: 0 })
 const displayFrame = ref<HTMLDivElement | null>(null)
 const displayCanvas = ref<HTMLCanvasElement | null>(null)
 const inputError = ref('')
 const frameError = ref('')
-const framesDrawn = ref(0)
+const fps = ref(0)
 const pressedKeys = new Set<number>()
-const pressedButtons = new Set<number>()
-let lastPointerPosition: { x: number; y: number } | null = null
+type ScreenPoint = { x: number; y: number }
+let activePointerId: number | null = null
+let gestureStart: ScreenPoint | null = null
+let gestureEnd: ScreenPoint | null = null
+let pendingPointerMove: ScreenPoint | null = null
+let pointerMoveFrame = 0
 let inputQueue: Promise<unknown> = Promise.resolve()
 let frameRevision = 0
 let reusableFrame: ImageData | undefined
-let pendingMotion: { x: number; y: number; absoluteX: number; absoluteY: number; buttons: number } | null = null
-let motionFrame = 0
+let fpsWindowFrames = 0
+let fpsWindowStartedAt = performance.now()
 
-const keyScancodes: Record<string, number> = {
-  Escape: 0x01,
-  Digit1: 0x02, Digit2: 0x03, Digit3: 0x04, Digit4: 0x05, Digit5: 0x06,
-  Digit6: 0x07, Digit7: 0x08, Digit8: 0x09, Digit9: 0x0a, Digit0: 0x0b,
-  Minus: 0x0c, Equal: 0x0d, Backspace: 0x0e, Tab: 0x0f,
-  KeyQ: 0x10, KeyW: 0x11, KeyE: 0x12, KeyR: 0x13, KeyT: 0x14,
-  KeyY: 0x15, KeyU: 0x16, KeyI: 0x17, KeyO: 0x18, KeyP: 0x19,
-  BracketLeft: 0x1a, BracketRight: 0x1b, Enter: 0x1c, ControlLeft: 0x1d,
-  KeyA: 0x1e, KeyS: 0x1f, KeyD: 0x20, KeyF: 0x21, KeyG: 0x22,
-  KeyH: 0x23, KeyJ: 0x24, KeyK: 0x25, KeyL: 0x26,
-  Semicolon: 0x27, Quote: 0x28, Backquote: 0x29, ShiftLeft: 0x2a,
-  Backslash: 0x2b, KeyZ: 0x2c, KeyX: 0x2d, KeyC: 0x2e, KeyV: 0x2f,
-  KeyB: 0x30, KeyN: 0x31, KeyM: 0x32, Comma: 0x33, Period: 0x34,
-  Slash: 0x35, ShiftRight: 0x36, AltLeft: 0x38, Space: 0x39, CapsLock: 0x3a,
-  F1: 0x3b, F2: 0x3c, F3: 0x3d, F4: 0x3e, F5: 0x3f, F6: 0x40,
-  F7: 0x41, F8: 0x42, F9: 0x43, F10: 0x44, F11: 0x57, F12: 0x58,
-  ControlRight: 0xe01d, AltRight: 0xe038, MetaLeft: 0xe05b, MetaRight: 0xe05c,
-  Insert: 0xe052, Delete: 0xe053, Home: 0xe047, End: 0xe04f,
-  PageUp: 0xe049, PageDown: 0xe051, ArrowUp: 0xe048, ArrowLeft: 0xe04b,
-  ArrowRight: 0xe04d, ArrowDown: 0xe050, NumpadEnter: 0xe01c,
+const androidKeycodes: Record<string, number> = {
+  Escape: 111, Backspace: 67, Tab: 61, Enter: 66,
+  Space: 62, ShiftLeft: 59, ShiftRight: 60,
+  ControlLeft: 113, ControlRight: 114, AltLeft: 57, AltRight: 58,
+  ArrowLeft: 21, ArrowUp: 19, ArrowRight: 22, ArrowDown: 20,
+  Home: 3, End: 7, PageUp: 92, PageDown: 93,
+  Backquote: 47, Minus: 69, Equal: 70,
+  BracketLeft: 71, BracketRight: 72, Backslash: 73,
+  Semicolon: 74, Quote: 75, Comma: 55, Period: 56, Slash: 76,
+  Digit0: 7, Digit1: 8, Digit2: 9, Digit3: 10, Digit4: 11,
+  Digit5: 12, Digit6: 13, Digit7: 14, Digit8: 15, Digit9: 16,
+  KeyA: 29, KeyB: 30, KeyC: 31, KeyD: 32, KeyE: 33, KeyF: 34,
+  KeyG: 35, KeyH: 36, KeyI: 37, KeyJ: 38, KeyK: 39, KeyL: 40,
+  KeyM: 41, KeyN: 42, KeyO: 43, KeyP: 44, KeyQ: 45, KeyR: 46,
+  KeyS: 47, KeyT: 48, KeyU: 49, KeyV: 50, KeyW: 51, KeyX: 52,
+  KeyY: 53, KeyZ: 54,
+  F1: 131, F2: 132, F3: 133, F4: 134, F5: 135, F6: 136,
+  F7: 137, F8: 138, F9: 139, F10: 140, F11: 141, F12: 142,
+  Delete: 112, Insert: 124, CapsLock: 115,
+  MetaLeft: 117, MetaRight: 118,
 }
 
 function queueInput(command: string, payload: Record<string, number | string | boolean>) {
+  if (!(window as any).__TAURI_INTERNALS__) {
+    return
+  }
+
   inputQueue = inputQueue
     .then(() => invoke(command, payload))
     .then(() => { inputError.value = '' })
     .catch((error: unknown) => { inputError.value = String(error) })
 }
 
-function pointerCoordinates(event: PointerEvent) {
+function pointerCoordinates(event: { clientX: number; clientY: number }) {
   const canvas = displayCanvas.value
   if (!canvas || !frameSize.value.width || !frameSize.value.height) return null
 
@@ -64,167 +72,248 @@ function pointerCoordinates(event: PointerEvent) {
   }
 }
 
-function buttonMask() {
-  return [...pressedButtons].reduce((mask, button) => mask | button, 0)
-}
-
-function sendPointerMotion(event: PointerEvent, force = false) {
+function onPointerMove(event: PointerEvent) {
+  if (event.pointerId !== activePointerId || !gestureStart) return
   const point = pointerCoordinates(event)
   if (!point) return
 
-  const previous = lastPointerPosition ?? {
-    x: Math.floor(frameSize.value.width / 2),
-    y: Math.floor(frameSize.value.height / 2),
-  }
-  const x = point.x - previous.x
-  const y = point.y - previous.y
-  if (x || y || force) {
-    pendingMotion = {
-      x: (pendingMotion?.x ?? 0) + x,
-      y: (pendingMotion?.y ?? 0) + y,
-      absoluteX: point.x,
-      absoluteY: point.y,
-      buttons: buttonMask(),
-    }
-    if (!motionFrame) motionFrame = requestAnimationFrame(flushPointerMotion)
-  }
-
-  lastPointerPosition = point
+  gestureEnd = point
+  pendingPointerMove = point
+  if (!pointerMoveFrame) pointerMoveFrame = requestAnimationFrame(flushPointerMove)
 }
 
-function flushPointerMotion() {
-  motionFrame = 0
-  if (!pendingMotion) return
-
-  const motion = pendingMotion
-  pendingMotion = null
-  queueInput('spice_mouse_motion', motion)
+function flushPointerMove() {
+  pointerMoveFrame = 0
+  if (activePointerId === null || !pendingPointerMove) return
+  const point = pendingPointerMove
+  pendingPointerMove = null
+  queueInput('scrcpy_input_touch', { x: point.x, y: point.y, action: 'move' })
 }
 
 function onPointerDown(event: PointerEvent) {
-  const button = event.button === 1 ? 2 : event.button === 2 ? 4 : 1
-  const buttonName = button === 1 ? 'left' : button === 2 ? 'middle' : 'right'
+  if (event.button !== 0 || activePointerId !== null) return
   event.preventDefault()
+  const point = pointerCoordinates(event)
+  if (!point) return
+
   displayFrame.value?.focus()
   try {
-    displayFrame.value?.setPointerCapture(event.pointerId)
+    displayCanvas.value?.setPointerCapture(event.pointerId)
   } catch {
     // Pointer capture may be unavailable when the frame is being replaced.
   }
-  sendPointerMotion(event, true)
-  if (motionFrame) cancelAnimationFrame(motionFrame)
-  flushPointerMotion()
-  pressedButtons.add(button)
-  queueInput('spice_mouse_button', { button: buttonName, pressed: true })
+
+  activePointerId = event.pointerId
+  gestureStart = point
+  gestureEnd = point
+  queueInput('scrcpy_input_touch', { x: point.x, y: point.y, action: 'down' })
 }
 
 function onPointerUp(event: PointerEvent) {
-  const button = event.button === 1 ? 2 : event.button === 2 ? 4 : 1
-  const buttonName = button === 1 ? 'left' : button === 2 ? 'middle' : 'right'
+  if (event.pointerId !== activePointerId || !gestureStart) return
   event.preventDefault()
-  sendPointerMotion(event, true)
-  if (motionFrame) cancelAnimationFrame(motionFrame)
-  flushPointerMotion()
-  pressedButtons.delete(button)
-  queueInput('spice_mouse_button', { button: buttonName, pressed: false })
+
+  const endPoint = pointerCoordinates(event) ?? gestureEnd ?? gestureStart
+  if (pointerMoveFrame) cancelAnimationFrame(pointerMoveFrame)
+  pointerMoveFrame = 0
+  if (pendingPointerMove) {
+    queueInput('scrcpy_input_touch', {
+      x: pendingPointerMove.x,
+      y: pendingPointerMove.y,
+      action: 'move',
+    })
+  }
+  pendingPointerMove = null
+  gestureEnd = endPoint
+  queueInput('scrcpy_input_touch', { x: endPoint.x, y: endPoint.y, action: 'up' })
+
+  activePointerId = null
+  gestureStart = null
+  gestureEnd = null
 }
 
 function onWheel(event: WheelEvent) {
   event.preventDefault()
-  const deltaY = event.deltaY < 0 ? 1 : event.deltaY > 0 ? -1 : 0
-  if (deltaY) queueInput('spice_mouse_wheel', { deltaY })
+  const canvas = displayCanvas.value
+  if (!canvas || !frameSize.value.width || !frameSize.value.height) return
+
+  const point = pointerCoordinates(event)
+  if (!point || (!event.deltaX && !event.deltaY)) return
+  queueInput('scrcpy_input_scroll', {
+    x: point.x,
+    y: point.y,
+    hscroll: event.deltaX,
+    vscroll: event.deltaY,
+  })
 }
 
 function onKeyDown(event: KeyboardEvent) {
-  const scancode = keyScancodes[event.code]
-  if (scancode === undefined) return
+  const keycode = androidKeycodes[event.code]
+  if (keycode === undefined) return
   event.preventDefault()
-  if (event.repeat || pressedKeys.has(scancode)) return
-  pressedKeys.add(scancode)
-  queueInput('spice_key', { scancode, pressed: true })
+  if (event.repeat || pressedKeys.has(keycode)) return
+  pressedKeys.add(keycode)
+  queueInput('scrcpy_input_key', { keycode, down: true, metaState: androidMetaState() })
 }
 
 function onKeyUp(event: KeyboardEvent) {
-  const scancode = keyScancodes[event.code]
-  if (scancode === undefined) return
+  const keycode = androidKeycodes[event.code]
+  if (keycode === undefined) return
   event.preventDefault()
-  if (!pressedKeys.delete(scancode)) return
-  queueInput('spice_key', { scancode, pressed: false })
+  if (!pressedKeys.delete(keycode)) return
+  queueInput('scrcpy_input_key', { keycode, down: false, metaState: androidMetaState() })
+}
+
+function androidMetaState() {
+  let metaState = 0
+  const has = (...keycodes: number[]) => keycodes.some((keycode) => pressedKeys.has(keycode))
+
+  if (has(59, 60)) metaState |= 0x00000001
+  if (pressedKeys.has(59)) metaState |= 0x00000040
+  if (pressedKeys.has(60)) metaState |= 0x00000080
+  if (has(57, 58)) metaState |= 0x00000002
+  if (pressedKeys.has(57)) metaState |= 0x00000010
+  if (pressedKeys.has(58)) metaState |= 0x00000020
+  if (has(113, 114)) metaState |= 0x00001000
+  if (pressedKeys.has(113)) metaState |= 0x00002000
+  if (pressedKeys.has(114)) metaState |= 0x00004000
+  if (has(117, 118)) metaState |= 0x00010000
+  if (pressedKeys.has(117)) metaState |= 0x00020000
+  if (pressedKeys.has(118)) metaState |= 0x00040000
+  return metaState
 }
 
 function releaseInputs() {
-  for (const scancode of pressedKeys) {
-    queueInput('spice_key', { scancode, pressed: false })
+  for (const keycode of [...pressedKeys]) {
+    pressedKeys.delete(keycode)
+    queueInput('scrcpy_input_key', { keycode, down: false, metaState: androidMetaState() })
   }
   pressedKeys.clear()
-
-  for (const button of pressedButtons) {
-    const buttonName = button === 1 ? 'left' : button === 2 ? 'middle' : 'right'
-    queueInput('spice_mouse_button', { button: buttonName, pressed: false })
+  if (activePointerId !== null && gestureEnd) {
+    queueInput('scrcpy_input_touch', { x: gestureEnd.x, y: gestureEnd.y, action: 'up' })
   }
-  pressedButtons.clear()
+  activePointerId = null
+  gestureStart = null
+  gestureEnd = null
+  pendingPointerMove = null
+  if (pointerMoveFrame) cancelAnimationFrame(pointerMoveFrame)
+  pointerMoveFrame = 0
 }
 
-async function updateFrame(buffer: ArrayBuffer) {
-  if (buffer.byteLength < 12) {
-    frameError.value = 'El frame SPICE recibido está incompleto.'
+function recordFrame() {
+  fpsWindowFrames += 1
+  const now = performance.now()
+  const elapsed = now - fpsWindowStartedAt
+  if (elapsed >= 1000) {
+    fps.value = Math.round(fpsWindowFrames * 1000 / elapsed)
+    fpsWindowFrames = 0
+    fpsWindowStartedAt = now
+  }
+}
+
+async function updateFrame(rawFrame: ArrayBuffer | Uint8Array) {
+  const buffer = rawFrame instanceof ArrayBuffer
+    ? rawFrame
+    : rawFrame.buffer.slice(rawFrame.byteOffset, rawFrame.byteOffset + rawFrame.byteLength)
+  const bytes = new Uint8Array(buffer)
+  const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+  const isPngFrame = bytes.length > 8 && bytes.slice(0, 8).every((value, index) => pngSignature[index] === value)
+
+  if (isPngFrame) {
+    try {
+      const blob = new Blob([bytes], { type: 'image/png' })
+      const objectUrl = URL.createObjectURL(blob)
+      const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const img = new Image()
+        img.onload = () => resolve(img)
+        img.onerror = () => reject(new Error('No se pudo cargar la imagen PNG de ADB'))
+        img.src = objectUrl
+      })
+
+      const nextSize = { width: image.width, height: image.height }
+      const revision = ++frameRevision
+      const dimensionsChanged = frameSize.value.width !== nextSize.width || frameSize.value.height !== nextSize.height
+      if (dimensionsChanged) {
+        frameSize.value = nextSize
+        await nextTick()
+      }
+
+      if (revision !== frameRevision) {
+        URL.revokeObjectURL(objectUrl)
+        return
+      }
+
+      const canvas = displayCanvas.value
+      const context = canvas?.getContext('2d', { alpha: false })
+      if (!canvas || !context) {
+        frameError.value = 'No se pudo inicializar el canvas de vídeo.'
+        URL.revokeObjectURL(objectUrl)
+        return
+      }
+
+      canvas.width = nextSize.width
+      canvas.height = nextSize.height
+      context.clearRect(0, 0, canvas.width, canvas.height)
+      context.drawImage(image, 0, 0)
+      recordFrame()
+      frameError.value = ''
+      URL.revokeObjectURL(objectUrl)
+    } catch (error) {
+      frameError.value = `No se pudo decodificar el PNG de ADB: ${String(error)}`
+    }
+    return
+  }
+
+  if (bytes.length < 12) {
+    frameError.value = 'El frame recibido está incompleto.'
     return
   }
 
   const header = new DataView(buffer)
-  const frameId = header.getUint32(0, true)
   const width = header.getUint32(4, true)
   const height = header.getUint32(8, true)
   const pixelLength = width * height * 4
-  try {
-    if (!width || !height || buffer.byteLength !== 12 + pixelLength) {
-      frameError.value = 'El frame SPICE tiene dimensiones o datos inválidos.'
-      return
-    }
-
-    const revision = ++frameRevision
-    const dimensionsChanged = frameSize.value.width !== width || frameSize.value.height !== height
-    if (dimensionsChanged) {
-      frameSize.value = { width, height }
-      await nextTick()
-    }
-
-    const canvas = displayCanvas.value
-    const context = canvas?.getContext('2d', { alpha: false })
-    if (!canvas || !context) {
-      frameError.value = 'No se pudo inicializar el canvas de vídeo.'
-      return
-    }
-
-    if (revision !== frameRevision) return
-
-    if (canvas.width !== width || canvas.height !== height) {
-      canvas.width = width
-      canvas.height = height
-    }
-    if (!reusableFrame || reusableFrame.width !== width || reusableFrame.height !== height) {
-      reusableFrame = new ImageData(width, height)
-    }
-    reusableFrame.data.set(new Uint8ClampedArray(buffer, 12, pixelLength))
-    context.putImageData(reusableFrame, 0, 0)
-    framesDrawn.value += 1
-    frameError.value = ''
-  } finally {
-    await invoke('spice_frame_ack', { frameId }).catch((error: unknown) => {
-      frameError.value = String(error)
-    })
+  if (!width || !height || bytes.length !== 12 + pixelLength) {
+    frameError.value = 'El frame tiene dimensiones o datos inválidos.'
+    return
   }
+
+  const revision = ++frameRevision
+  const dimensionsChanged = frameSize.value.width !== width || frameSize.value.height !== height
+  if (dimensionsChanged) {
+    frameSize.value = { width, height }
+    await nextTick()
+  }
+
+  const canvas = displayCanvas.value
+  const context = canvas?.getContext('2d', { alpha: false })
+  if (!canvas || !context) {
+    frameError.value = 'No se pudo inicializar el canvas de vídeo.'
+    return
+  }
+
+  if (revision !== frameRevision) return
+
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width
+    canvas.height = height
+  }
+  if (!reusableFrame || reusableFrame.width !== width || reusableFrame.height !== height) {
+    reusableFrame = new ImageData(width, height)
+  }
+  reusableFrame.data.set(new Uint8ClampedArray(buffer, 12, pixelLength))
+  context.putImageData(reusableFrame, 0, 0)
+  recordFrame()
+  frameError.value = ''
 }
 
 function onPointerCancel() {
   releaseInputs()
-  lastPointerPosition = null
 }
 
 onMounted(() => window.addEventListener('blur', releaseInputs))
 onUnmounted(() => {
   window.removeEventListener('blur', releaseInputs)
-  if (motionFrame) cancelAnimationFrame(motionFrame)
   releaseInputs()
 })
 </script>
@@ -247,22 +336,28 @@ onUnmounted(() => {
           <div v-if="!frameSize.width" class="display-placeholder">
             <Activity :size="34" />
             <strong>Esperando conexión de vídeo</strong>
-            <span>Conecta SPICE para recibir la pantalla de Android dentro de esta ventana.</span>
+            <span>Conecta ADB para recibir la pantalla del dispositivo Android dentro de esta ventana.</span>
           </div>
-          <div v-else ref="displayFrame" class="display-frame" tabindex="0" aria-label="Pantalla interactiva de Android"
-            @pointerdown="onPointerDown" @pointermove="sendPointerMotion" @pointerup="onPointerUp"
-            @pointercancel="onPointerCancel" @wheel.prevent="onWheel" @contextmenu.prevent @keydown="onKeyDown"
-            @keyup="onKeyUp">
-            <canvas ref="displayCanvas" :width="frameSize.width" :height="frameSize.height" role="img"
-              aria-label="Pantalla de Android" />
-            <span>{{ frameSize.width }} x {{ frameSize.height }} · {{ framesDrawn }} frames</span>
-            <small v-if="inputError" class="input-error" role="alert">{{ inputError }}</small>
-            <small v-if="frameError" class="input-error" role="alert">{{ frameError }}</small>
+          <div v-else class="display-shell">
+            <div ref="displayFrame" class="display-frame" tabindex="0" aria-label="Pantalla interactiva de Android"
+              @keydown="onKeyDown" @keyup="onKeyUp">
+              <div class="screen-header">
+                <span class="screen-pill">Android</span>
+                <span class="screen-live"><i></i>LIVE</span>
+              </div>
+              <canvas ref="displayCanvas" :width="frameSize.width" :height="frameSize.height" role="img"
+                aria-label="Pantalla de Android" @pointerdown="onPointerDown" @pointermove="onPointerMove"
+                @pointerup="onPointerUp" @pointercancel="onPointerCancel" @wheel.prevent="onWheel"
+                @contextmenu.prevent />
+              <span>{{ frameSize.width }} x {{ frameSize.height }} · {{ fps }} FPS</span>
+              <small v-if="inputError" class="input-error" role="alert">{{ inputError }}</small>
+              <small v-if="frameError" class="input-error" role="alert">{{ frameError }}</small>
+            </div>
           </div>
         </section>
 
         <aside class="control-column">
-          <SpiceConnection @frame="updateFrame" />
+          <AdbConnection @frame="updateFrame" />
         </aside>
       </div>
     </main>
@@ -347,6 +442,7 @@ h1 {
 .display-panel {
   min-height: 590px;
   overflow: hidden;
+  background: linear-gradient(180deg, rgba(12, 20, 24, 0.04), rgba(12, 20, 24, 0.02));
 }
 
 .panel-heading {
@@ -388,6 +484,11 @@ h1 {
   text-align: center;
 }
 
+.display-shell {
+  padding: 1rem;
+  background: linear-gradient(180deg, rgba(7, 14, 18, 0.02), rgba(7, 14, 18, 0.06));
+}
+
 .display-frame {
   position: relative;
   display: block;
@@ -398,6 +499,57 @@ h1 {
   outline: none;
   touch-action: none;
   user-select: none;
+  border: 1px solid rgba(17, 39, 45, 0.2);
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04), 0 14px 32px rgba(14, 23, 27, 0.08);
+  overflow: hidden;
+}
+
+.screen-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.55rem 0.7rem;
+  background: linear-gradient(180deg, rgba(17, 26, 30, 0.75), rgba(17, 26, 30, 0.2));
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  pointer-events: none;
+}
+
+.screen-pill,
+.screen-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  letter-spacing: 0.08em;
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.screen-pill {
+  background: rgba(255, 255, 255, 0.08);
+  color: #edf5f6;
+}
+
+.screen-live {
+  background: rgba(47, 180, 117, 0.12);
+  color: #a7f3c7;
+}
+
+.screen-live i {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #4ade80;
+  box-shadow: 0 0 12px rgba(74, 222, 128, 0.7);
 }
 
 .display-frame:focus-visible {
@@ -409,7 +561,8 @@ h1 {
   display: block;
   width: 100%;
   height: auto;
-  pointer-events: none;
+  pointer-events: auto;
+  background: #0b1216;
 }
 
 .input-error {

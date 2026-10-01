@@ -1,12 +1,5 @@
-mod spice;
+mod adb;
 mod titlebar;
-
-use std::sync::Arc;
-use tokio::sync::Mutex;
-
-pub struct SpiceAppState {
-    pub session: Arc<Mutex<Option<spice::SpiceSession>>>,
-}
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -20,9 +13,7 @@ fn greet(name: &str) -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(SpiceAppState {
-            session: Arc::new(Mutex::new(None)),
-        })
+        .manage(adb::AdbAppState::new())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             #[cfg(target_os = "linux")]
@@ -36,14 +27,15 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             greet,
-            spice::spice_connect,
-            spice::spice_disconnect,
-            spice::spice_frame_ack,
-            spice::spice_key,
-            spice::spice_mouse_button,
-            spice::spice_mouse_motion,
-            spice::spice_mouse_wheel,
-            spice::spice_probe,
+            adb::adb_devices,
+            adb::adb_connect,
+            adb::adb_disconnect,
+            adb::adb_input_tap,
+            adb::adb_input_swipe,
+            adb::adb_input_key,
+            adb::scrcpy_input_key,
+            adb::scrcpy_input_touch,
+            adb::scrcpy_input_scroll,
             titlebar::sync_theme
         ])
         .run(tauri::generate_context!())

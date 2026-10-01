@@ -387,7 +387,9 @@ pub fn setup_gtk_headerbar(window: tauri::WebviewWindow) {
             event_box.add_events(gtk::gdk::EventMask::BUTTON_PRESS_MASK);
             let w_drag = window.clone();
             event_box.connect_button_press_event(move |_, event| {
-                if event.event_type() == gtk::gdk::EventType::DoubleButtonPress && event.button() == 1 {
+                if event.event_type() == gtk::gdk::EventType::DoubleButtonPress
+                    && event.button() == 1
+                {
                     if let Ok(is_max) = w_drag.is_maximized() {
                         if is_max {
                             let _ = w_drag.unmaximize();

@@ -1,4 +1,3 @@
-import { getCurrentWindow } from '@tauri-apps/api/window'
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
@@ -9,10 +8,15 @@ import '@materializecss/materialize'
 
 import './css/style.css'
 
-// Mostrar la ventana solo cuando el DOM de Vue esté completamente listo
-document.addEventListener('DOMContentLoaded', () => {
-  getCurrentWindow().show()
-})
+const hasTauriWindow = typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__)
+
+if (hasTauriWindow) {
+  import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+    document.addEventListener('DOMContentLoaded', () => {
+      getCurrentWindow().show()
+    })
+  }).catch(() => undefined)
+}
 
 const app = createApp(App)
 

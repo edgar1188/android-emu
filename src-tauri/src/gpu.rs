@@ -4,13 +4,15 @@ use std::path::Path;
 #[cfg(target_os = "linux")]
 fn is_nvidia_active() -> bool {
     let pci_dir = Path::new("/sys/bus/pci/devices");
-    
-    let Ok(entries) = fs::read_dir(pci_dir) else { return false; };
+
+    let Ok(entries) = fs::read_dir(pci_dir) else {
+        return false;
+    };
 
     // Escanea los dispositivos buscando una GPU Nvidia que esté usando su driver privativo
     entries.flatten().any(|entry| {
         let path = entry.path();
-        
+
         // 1. Verificar si es controlador gráfico (PCI class 0x03)
         let is_gpu = fs::read_to_string(path.join("class"))
             .map(|c| c.trim().starts_with("0x03"))
@@ -34,8 +36,10 @@ fn is_nvidia_active() -> bool {
 pub fn setup_workarounds() {
     if is_nvidia_active() {
         #[cfg(debug_assertions)]
-        println!("🔧 NVIDIA GPU activo detectado. Aplicando parches de compatibilidad de WebKit...");
-        
+        println!(
+            "🔧 NVIDIA GPU activo detectado. Aplicando parches de compatibilidad de WebKit..."
+        );
+
         // Se respeta si el usuario ya configuró estas variables manualmente
         unsafe {
             if std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none() {

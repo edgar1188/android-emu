@@ -25,7 +25,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 spice-client = "0.2"
 shakenfist-spice-compression = { version = "0.1.7", default-features = false, features = ["lz"] }
-tokio = { version = "1", features = ["sync"] }
+fadb-scrcpy = "0.8.12"
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 
 [profile.release]
 panic = "abort"
