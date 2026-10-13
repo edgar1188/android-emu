@@ -410,7 +410,7 @@ onUnmounted(() => {
           </div>
         </section>
 
-        <aside class="control-column">
+        <aside class="control-column" style="display:none">
           <AdbConnection @frame="updateFrame" @connected="onAdbConnected" />
         </aside>
       </div>
