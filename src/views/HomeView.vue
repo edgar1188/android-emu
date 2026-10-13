@@ -30,12 +30,26 @@ let frameRevision = 0
 let reusableFrame: ImageData | undefined
 let fpsWindowFrames = 0
 let fpsWindowStartedAt = performance.now()
+let statusDismissTimer: ReturnType<typeof setTimeout> | undefined
+let errorDismissTimer: ReturnType<typeof setTimeout> | undefined
 
-watch(emulatorStatus, () => {
+watch([emulatorStatus, isDownloadingImage], () => {
+  if (statusDismissTimer) clearTimeout(statusDismissTimer)
   isStatusDismissed.value = false
+  if (emulatorStatus.value && !isDownloadingImage.value) {
+    statusDismissTimer = setTimeout(() => {
+      isStatusDismissed.value = true
+    }, 5000)
+  }
 })
 watch(emulatorError, () => {
+  if (errorDismissTimer) clearTimeout(errorDismissTimer)
   isErrorDismissed.value = false
+  if (emulatorError.value) {
+    errorDismissTimer = setTimeout(() => {
+      isErrorDismissed.value = true
+    }, 5000)
+  }
 })
 
 const androidKeycodes: Record<string, number> = {
@@ -365,6 +379,8 @@ onMounted(() => {
 onUnmounted(() => {
   window.removeEventListener('blur', releaseInputs)
   unlistenDownloadProgress?.()
+  if (statusDismissTimer) clearTimeout(statusDismissTimer)
+  if (errorDismissTimer) clearTimeout(errorDismissTimer)
   releaseInputs()
 })
 </script>
@@ -389,8 +405,7 @@ onUnmounted(() => {
         </div>
         <div v-if="emulatorError && !isErrorDismissed" class="emulator-status emulator-status-error" role="alert">
           <span>{{ emulatorError }}</span>
-          <button class="message-dismiss" type="button" aria-label="Descartar mensaje"
-            @click="isErrorDismissed = true">
+          <button class="message-dismiss" type="button" aria-label="Descartar mensaje" @click="isErrorDismissed = true">
             <X :size="16" aria-hidden="true" />
           </button>
         </div>
@@ -413,10 +428,10 @@ onUnmounted(() => {
           <div v-else class="display-shell">
             <div ref="displayFrame" class="display-frame" tabindex="0" aria-label="Pantalla interactiva de Android"
               @keydown="onKeyDown" @keyup="onKeyUp">
-              <div class="screen-header">
+              <!-- <div class="screen-header">
                 <span class="screen-pill">Android</span>
                 <span class="screen-live"><i></i>LIVE</span>
-              </div>
+              </div> -->
               <canvas ref="displayCanvas" :width="frameSize.width" :height="frameSize.height" role="img"
                 aria-label="Pantalla de Android" @pointerdown="onPointerDown" @pointermove="onPointerMove"
                 @pointerup="onPointerUp" @pointercancel="onPointerCancel" @wheel.prevent="onWheel"
@@ -721,7 +736,7 @@ h1 {
   overflow-wrap: anywhere;
 }
 
-.display-frame > span {
+.display-frame>span {
   position: absolute;
   right: 1rem;
   bottom: 1rem;
