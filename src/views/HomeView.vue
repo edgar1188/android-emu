@@ -331,10 +331,10 @@ async function startAndroidEmulator() {
         isDownloadingImage.value = event.payload.percentage !== 100
         emulatorStatus.value = isDownloadingImage.value
           ? 'Descargando la imagen de Android...'
-          : 'Imagen descargada. Iniciando QEMU y esperando conexión ADB...'
+          : 'Imagen descargada. Iniciando, esperando conexión...'
       },
     )
-    emulatorStatus.value = 'Iniciando QEMU y esperando conexión ADB...'
+    emulatorStatus.value = 'Iniciando, esperando conexión...'
     emulatorStatus.value = await invoke<string>('start_android_emulator')
     emulatorError.value = ''
   } catch (error) {
@@ -346,12 +346,12 @@ async function startAndroidEmulator() {
 }
 
 function onAdbConnected() {
-  emulatorStatus.value = 'Android conectado por ADB.'
+  emulatorStatus.value = 'Android conectado.'
 }
 
 onMounted(() => {
   window.addEventListener('blur', releaseInputs)
-  emulatorStatus.value = 'Iniciando el emulador y esperando la conexión ADB...'
+  emulatorStatus.value = 'Iniciando el emulador y esperando la conexión...'
   void startAndroidEmulator()
 })
 onUnmounted(() => {
@@ -363,18 +363,13 @@ onUnmounted(() => {
 
 <template>
   <div class="home-shell">
-    <Navbar />
 
     <main class="workspace">
       <div v-if="emulatorStatus" class="emulator-status" role="status">
         {{ emulatorStatus }}
-        <progress
-          v-if="isDownloadingImage"
-          class="image-download-progress"
-          :value="imageDownloadPercentage ?? undefined"
-          :max="100"
-          aria-label="Progreso de descarga de la imagen Android"
-        />
+        <progress v-if="isDownloadingImage" class="image-download-progress"
+          :value="imageDownloadPercentage ?? undefined" :max="100"
+          aria-label="Progreso de descarga de la imagen Android" />
         <span v-if="isDownloadingImage && imageDownloadPercentage !== null">
           {{ imageDownloadPercentage }}%
         </span>
@@ -394,7 +389,7 @@ onUnmounted(() => {
 
           <div v-if="!frameSize.width" class="display-placeholder">
             <Activity :size="34" />
-            <strong>Esperando conexión ADB</strong>
+            <strong>Esperando conexión</strong>
             <span>La aplicación se conectará automáticamente cuando Android termine de iniciar.</span>
           </div>
           <div v-else class="display-shell">

@@ -352,7 +352,7 @@ pub async fn start_android_emulator(
                     format!("QEMU no pudo iniciar el emulador: {details}")
                 });
             }
-            "QEMU iniciado.".to_string()
+            "Android iniciado.".to_string()
         };
         format!("{qemu_status} {image_status}")
     };
@@ -366,12 +366,12 @@ pub async fn start_android_emulator(
         let details = String::from_utf8_lossy(&adb_output.stderr)
             .trim()
             .to_string();
-        return Err(format!("No se pudo iniciar ADB: {details}"));
+        return Err(format!("No se pudo iniciar: {details}"));
     }
 
     wait_for_adb_connection().await?;
     *started = true;
-    Ok(format!("{qemu_status} Android conectado por ADB."))
+    Ok(format!("{qemu_status} Android conectado."))
 }
 
 pub async fn shutdown_android_emulator() -> Result<(), String> {
