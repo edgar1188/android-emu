@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { Activity, Monitor } from '@lucide/vue'
 import Navbar from '../components/Navbar.vue'
 import AdbConnection from '../components/AdbConnection.vue'
@@ -12,7 +13,10 @@ const inputError = ref('')
 const frameError = ref('')
 const emulatorStatus = ref('Iniciando el emulador Android...')
 const emulatorError = ref('')
+const isDownloadingImage = ref(false)
+const imageDownloadPercentage = ref<number | null>(null)
 const fps = ref(0)
+let unlistenDownloadProgress: (() => void) | undefined
 const pressedKeys = new Set<number>()
 type ScreenPoint = { x: number; y: number }
 let activePointerId: number | null = null
@@ -320,20 +324,39 @@ async function startAndroidEmulator() {
   }
 
   try {
+    unlistenDownloadProgress = await listen<{ percentage: number | null }>(
+      'emulator-download-progress',
+      (event) => {
+        imageDownloadPercentage.value = event.payload.percentage
+        isDownloadingImage.value = event.payload.percentage !== 100
+        emulatorStatus.value = isDownloadingImage.value
+          ? 'Descargando la imagen de Android...'
+          : 'Imagen descargada. Iniciando QEMU y esperando conexión ADB...'
+      },
+    )
+    emulatorStatus.value = 'Iniciando QEMU y esperando conexión ADB...'
     emulatorStatus.value = await invoke<string>('start_android_emulator')
     emulatorError.value = ''
   } catch (error) {
-    emulatorStatus.value = ''
+    emulatorStatus.value = 'No se pudo iniciar el emulador.'
     emulatorError.value = String(error)
+  } finally {
+    isDownloadingImage.value = false
   }
+}
+
+function onAdbConnected() {
+  emulatorStatus.value = 'Android conectado por ADB.'
 }
 
 onMounted(() => {
   window.addEventListener('blur', releaseInputs)
+  emulatorStatus.value = 'Iniciando el emulador y esperando la conexión ADB...'
   void startAndroidEmulator()
 })
 onUnmounted(() => {
   window.removeEventListener('blur', releaseInputs)
+  unlistenDownloadProgress?.()
   releaseInputs()
 })
 </script>
@@ -343,6 +366,22 @@ onUnmounted(() => {
     <Navbar />
 
     <main class="workspace">
+      <div v-if="emulatorStatus" class="emulator-status" role="status">
+        {{ emulatorStatus }}
+        <progress
+          v-if="isDownloadingImage"
+          class="image-download-progress"
+          :value="imageDownloadPercentage ?? undefined"
+          :max="100"
+          aria-label="Progreso de descarga de la imagen Android"
+        />
+        <span v-if="isDownloadingImage && imageDownloadPercentage !== null">
+          {{ imageDownloadPercentage }}%
+        </span>
+      </div>
+      <div v-if="emulatorError" class="emulator-status emulator-status-error" role="alert">
+        {{ emulatorError }}
+      </div>
 
       <div class="workspace-grid">
         <section class="display-panel">
@@ -355,8 +394,8 @@ onUnmounted(() => {
 
           <div v-if="!frameSize.width" class="display-placeholder">
             <Activity :size="34" />
-            <strong>Esperando conexión de vídeo</strong>
-            <span>Conecta ADB para recibir la pantalla del dispositivo Android dentro de esta ventana.</span>
+            <strong>Esperando conexión ADB</strong>
+            <span>La aplicación se conectará automáticamente cuando Android termine de iniciar.</span>
           </div>
           <div v-else class="display-shell">
             <div ref="displayFrame" class="display-frame" tabindex="0" aria-label="Pantalla interactiva de Android"
@@ -377,7 +416,7 @@ onUnmounted(() => {
         </section>
 
         <aside class="control-column">
-          <AdbConnection @frame="updateFrame" />
+          <AdbConnection @frame="updateFrame" @connected="onAdbConnected" />
         </aside>
       </div>
     </main>
@@ -394,6 +433,14 @@ onUnmounted(() => {
   width: min(1440px, 100%);
   margin: 0 auto;
   padding: 2.5rem clamp(1rem, 4vw, 3.5rem);
+}
+
+.image-download-progress {
+  display: block;
+  width: 100%;
+  height: 0.6rem;
+  margin-top: 0.75rem;
+  accent-color: var(--canaima-primary);
 }
 
 .emulator-status {

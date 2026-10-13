@@ -8,3 +8,5 @@ La aplicación inicia QEMU automáticamente al abrirse. Busca la imagen en:
 La URL se puede sobrescribir con `ANDROID_QCOW2_URL`. Se requieren `curl`, `qemu-system-x86_64`, `adb` y acceso a KVM.
 
 Si ya hay una sesión escuchando en `127.0.0.1:5555`, la aplicación la reutiliza sin abrir ni descargar una imagen. Al cerrar la ventana, intenta apagar esa instancia con `adb shell poweroff` antes de cerrar.
+
+Durante la descarga se muestra su progreso. Después de iniciar QEMU, la aplicación espera a que Android esté disponible por ADB y se conecta automáticamente, sin requerir acciones en el panel de transporte.

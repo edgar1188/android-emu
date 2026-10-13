@@ -14,22 +14,26 @@ const status = ref('')
 const isLoading = ref(false)
 const errorMessage = ref('')
 let activeFrameChannel: Channel<ArrayBuffer> | undefined
+let stopAutoConnect = false
 const emit = defineEmits<{
   frame: [frame: ArrayBuffer]
+  connected: []
 }>()
 
-async function refreshDevices() {
+async function refreshDevices(): Promise<boolean> {
   if (!(window as any).__TAURI_INTERNALS__) {
     devices.value = []
     status.value = 'Debe abrirse desde Tauri para usar ADB.'
-    return
+    return false
   }
 
   try {
     const list = (await invoke('adb_devices')) as AdbDevice[]
     devices.value = list
 
-    const preferred = list.find((device) => device.serial.includes('emulator') || device.serial.includes('5554'))
+    const emulator = list.find((device) => device.serial === '127.0.0.1:5555')
+    const preferred = emulator
+      ?? list.find((device) => device.serial.includes('emulator') || device.serial.includes('5554'))
       ?? list[0]
 
     if (preferred) {
@@ -39,23 +43,27 @@ async function refreshDevices() {
     }
 
     if (!list.length) {
-      status.value = 'No hay dispositivos ADB conectados.'
+      status.value = 'Esperando conexión ADB...'
     }
+    errorMessage.value = ''
+    return Boolean(emulator)
   } catch (error) {
     errorMessage.value = String(error)
+    return false
   }
 }
 
-async function connectDevice() {
+async function connectDevice(): Promise<boolean> {
   if (!(window as any).__TAURI_INTERNALS__) {
     errorMessage.value = 'La conexión ADB solo funciona dentro de la app Tauri.'
-    return
+    return false
   }
 
   if (!selectedSerial.value) {
     errorMessage.value = 'Selecciona un dispositivo ADB antes de conectar.'
-    return
+    return false
   }
+  if (isLoading.value) return false
 
   isLoading.value = true
   errorMessage.value = ''
@@ -67,23 +75,33 @@ async function connectDevice() {
     activeFrameChannel = frameChannel
     await invoke('adb_connect', { serial: selectedSerial.value, onFrame: frameChannel })
     status.value = `Conectado a ${selectedSerial.value}`
+    emit('connected')
+    return true
   } catch (error) {
     activeFrameChannel = undefined
     errorMessage.value = String(error)
+    return false
   } finally {
     isLoading.value = false
   }
 }
 
-onMounted(() => {
-  void refreshDevices().then(() => {
-    if (selectedSerial.value) {
-      void connectDevice()
+async function waitForDeviceAndConnect() {
+  while (!stopAutoConnect) {
+    const deviceAvailable = await refreshDevices()
+    if (deviceAvailable && await connectDevice()) {
+      return
     }
-  })
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+  }
+}
+
+onMounted(() => {
+  void waitForDeviceAndConnect()
 })
 
 onUnmounted(() => {
+  stopAutoConnect = true
   const channel = activeFrameChannel
   if (!(window as any).__TAURI_INTERNALS__) {
     return

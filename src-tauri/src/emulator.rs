@@ -1,14 +1,27 @@
+use serde::Serialize;
 use std::{
     env, fs,
     path::{Path, PathBuf},
     time::Duration,
 };
-use tauri::State;
-use tokio::{net::TcpStream, process::Command, sync::Mutex, time::timeout};
+use tauri::{AppHandle, Emitter, State};
+use tokio::{
+    io::{AsyncBufReadExt, BufReader},
+    net::TcpStream,
+    process::Command,
+    sync::Mutex,
+    time::{sleep, timeout},
+};
 
 const IMAGE_FILE_NAME: &str = "android.qcow2";
 const IMAGE_URL_ENV: &str = "ANDROID_QCOW2_URL";
 const DEFAULT_IMAGE_URL: &str = "http://localhost:8888/android.qcow2";
+const IMAGE_PROGRESS_EVENT: &str = "emulator-download-progress";
+
+#[derive(Clone, Serialize)]
+struct DownloadProgress {
+    percentage: Option<u8>,
+}
 
 pub struct EmulatorAppState {
     started: Mutex<bool>,
@@ -46,25 +59,62 @@ fn validate_image(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-async fn download_image(url: &str, destination: &Path) -> Result<(), String> {
+async fn download_image(app: &AppHandle, url: &str, destination: &Path) -> Result<(), String> {
     let temporary_path = destination.with_extension("qcow2.part");
-    let output = Command::new("curl")
+    app.emit(IMAGE_PROGRESS_EVENT, DownloadProgress { percentage: None })
+        .map_err(|error| format!("No se pudo informar el inicio de la descarga: {error}"))?;
+
+    let mut child = Command::new("curl")
         .args([
             "--fail",
             "--location",
             "--show-error",
-            "--silent",
+            "--progress-bar",
             "--output",
         ])
         .arg(&temporary_path)
         .arg(url)
-        .output()
-        .await
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .map_err(|error| format!("No se pudo iniciar la descarga con curl: {error}"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "No se pudo leer el progreso de curl.".to_string())?;
+    let mut stderr = BufReader::new(stderr);
+    let mut output = Vec::new();
+    let mut last_percentage = None;
+    let mut progress_line = Vec::new();
+    loop {
+        progress_line.clear();
+        let bytes_read = stderr
+            .read_until(b'\r', &mut progress_line)
+            .await
+            .map_err(|error| format!("No se pudo leer el progreso de descarga: {error}"))?;
+        if bytes_read == 0 {
+            break;
+        }
+        output.extend_from_slice(&progress_line);
+        let line = String::from_utf8_lossy(&progress_line);
+        let percentage = line.split_whitespace().find_map(|part| {
+            part.strip_suffix('%')
+                .and_then(|value| value.parse::<f32>().ok())
+                .map(|value| value.round().clamp(0.0, 100.0) as u8)
+        });
+        if percentage.is_some() && percentage != last_percentage {
+            app.emit(IMAGE_PROGRESS_EVENT, DownloadProgress { percentage })
+                .map_err(|error| format!("No se pudo informar el progreso de descarga: {error}"))?;
+            last_percentage = percentage;
+        }
+    }
+    let status = child
+        .wait()
+        .await
+        .map_err(|error| format!("No se pudo finalizar curl: {error}"))?;
 
-    if !output.status.success() {
+    if !status.success() {
         let _ = fs::remove_file(&temporary_path);
-        let details = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let details = String::from_utf8_lossy(&output).trim().to_string();
         return Err(if details.is_empty() {
             format!("No se pudo descargar la imagen desde {url}.")
         } else {
@@ -83,10 +133,18 @@ async fn download_image(url: &str, destination: &Path) -> Result<(), String> {
             "No se pudo guardar la imagen en {}: {error}",
             destination.display()
         )
-    })
+    })?;
+    app.emit(
+        IMAGE_PROGRESS_EVENT,
+        DownloadProgress {
+            percentage: Some(100),
+        },
+    )
+    .map_err(|error| format!("No se pudo informar el fin de la descarga: {error}"))?;
+    Ok(())
 }
 
-async fn ensure_image() -> Result<(PathBuf, String), String> {
+async fn ensure_image(app: &AppHandle) -> Result<(PathBuf, String), String> {
     let config_image = config_image_path()?;
     let config_dir = config_image
         .parent()
@@ -109,7 +167,7 @@ async fn ensure_image() -> Result<(PathBuf, String), String> {
         ));
     }
 
-    download_image(&url, &config_image).await?;
+    download_image(app, &url, &config_image).await?;
     Ok((
         config_image.clone(),
         format!("Imagen descargada en {}", config_image.display()),
@@ -216,97 +274,104 @@ async fn connect_adb_to_emulator() -> Result<(), String> {
     Ok(())
 }
 
+async fn wait_for_adb_connection() -> Result<(), String> {
+    loop {
+        if emulator_port_is_listening().await {
+            match connect_adb_to_emulator().await {
+                Ok(()) => return Ok(()),
+                Err(error) if error.starts_with("QEMU escucha en el puerto 5555") => {}
+                Err(error) => return Err(error),
+            }
+        }
+        sleep(Duration::from_secs(2)).await;
+    }
+}
+
 #[tauri::command]
-pub async fn start_android_emulator(state: State<'_, EmulatorAppState>) -> Result<String, String> {
+pub async fn start_android_emulator(
+    app: AppHandle,
+    state: State<'_, EmulatorAppState>,
+) -> Result<String, String> {
     let mut started = state.started.lock().await;
     if *started {
         return Ok("El emulador ya se inició en esta sesión.".to_string());
     }
 
-    if emulator_port_is_listening().await {
-        let output = Command::new("adb")
-            .arg("start-server")
-            .output()
-            .await
-            .map_err(|error| format!("No se pudo iniciar ADB: {error}"))?;
-        if !output.status.success() {
-            let details = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(format!("No se pudo iniciar ADB: {details}"));
-        }
-        connect_adb_to_emulator().await?;
-        *started = true;
-        return Ok("Sesión QEMU existente reutilizada en el puerto 5555.".to_string());
-    }
-
-    let (image_path, image_status) = ensure_image().await?;
-    let config_image = config_image_path()?;
-    let pid_file = config_image
-        .parent()
-        .ok_or_else(|| "No se pudo determinar el directorio de configuración.".to_string())?
-        .join("qemu.pid");
-
-    let _ = Command::new("adb").arg("kill-server").output().await;
-
-    let qemu_status = if qemu_is_running(&pid_file, &image_path)? {
-        "QEMU ya estaba ejecutándose.".to_string()
+    let qemu_status = if emulator_port_is_listening().await {
+        "Sesión QEMU existente reutilizada en el puerto 5555.".to_string()
     } else {
-        let output = Command::new("qemu-system-x86_64")
-            .args([
-                "-nodefaults",
-                "-cpu",
-                "host",
-                "-m",
-                "2G",
-                "--enable-kvm",
-                "-boot",
-                "cd",
-                "-smp",
-                "2,cores=2,sockets=1",
-                "-daemonize",
-                "-pidfile",
-            ])
-            .arg(&pid_file)
-            .arg("-hda")
-            .arg(&image_path)
-            .args([
-                "-netdev",
-                "user,id=user0,hostfwd=tcp:127.0.0.1:5555-:5555",
-                "-device",
-                "virtio-net-pci,netdev=user0",
-                "-vga",
-                "qxl",
-                "-display",
-                "none",
-            ])
-            .output()
-            .await
-            .map_err(|error| format!("No se pudo iniciar QEMU: {error}"))?;
+        let (image_path, image_status) = ensure_image(&app).await?;
+        let config_image = config_image_path()?;
+        let pid_file = config_image
+            .parent()
+            .ok_or_else(|| "No se pudo determinar el directorio de configuración.".to_string())?
+            .join("qemu.pid");
 
-        if !output.status.success() {
-            let details = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(if details.is_empty() {
-                format!("QEMU terminó con el código {}.", output.status)
-            } else {
-                format!("QEMU no pudo iniciar el emulador: {details}")
-            });
-        }
-        "QEMU iniciado.".to_string()
+        let _ = Command::new("adb").arg("kill-server").output().await;
+
+        let qemu_status = if qemu_is_running(&pid_file, &image_path)? {
+            "QEMU ya estaba ejecutándose.".to_string()
+        } else {
+            let output = Command::new("qemu-system-x86_64")
+                .args([
+                    "-nodefaults",
+                    "-cpu",
+                    "host",
+                    "-m",
+                    "2G",
+                    "--enable-kvm",
+                    "-boot",
+                    "cd",
+                    "-smp",
+                    "2,cores=2,sockets=1",
+                    "-daemonize",
+                    "-pidfile",
+                ])
+                .arg(&pid_file)
+                .arg("-hda")
+                .arg(&image_path)
+                .args([
+                    "-netdev",
+                    "user,id=user0,hostfwd=tcp:127.0.0.1:5555-:5555",
+                    "-device",
+                    "virtio-net-pci,netdev=user0",
+                    "-vga",
+                    "qxl",
+                    "-display",
+                    "none",
+                ])
+                .output()
+                .await
+                .map_err(|error| format!("No se pudo iniciar QEMU: {error}"))?;
+
+            if !output.status.success() {
+                let details = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                return Err(if details.is_empty() {
+                    format!("QEMU terminó con el código {}.", output.status)
+                } else {
+                    format!("QEMU no pudo iniciar el emulador: {details}")
+                });
+            }
+            "QEMU iniciado.".to_string()
+        };
+        format!("{qemu_status} {image_status}")
     };
 
     let adb_output = Command::new("adb")
         .arg("start-server")
         .output()
         .await
-        .map_err(|error| format!("QEMU inició, pero no se pudo iniciar ADB: {error}"))?;
+        .map_err(|error| format!("No se pudo iniciar ADB: {error}"))?;
     if !adb_output.status.success() {
         let details = String::from_utf8_lossy(&adb_output.stderr)
             .trim()
             .to_string();
-        return Err(format!("QEMU inició, pero ADB no pudo arrancar: {details}"));
+        return Err(format!("No se pudo iniciar ADB: {details}"));
     }
 
+    wait_for_adb_connection().await?;
     *started = true;
-    Ok(format!("{qemu_status} Emulador listo. {image_status}"))
+    Ok(format!("{qemu_status} Android conectado por ADB."))
 }
 
 pub async fn shutdown_android_emulator() -> Result<(), String> {
