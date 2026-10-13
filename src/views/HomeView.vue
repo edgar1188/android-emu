@@ -92,11 +92,23 @@ function pointerCoordinates(event: { clientX: number; clientY: number }) {
   const rect = canvas.getBoundingClientRect()
   if (!rect.width || !rect.height) return null
 
+  const imageAspect = frameSize.value.width / frameSize.value.height
+  const canvasAspect = rect.width / rect.height
+  const contentWidth = canvasAspect > imageAspect ? rect.height * imageAspect : rect.width
+  const contentHeight = canvasAspect > imageAspect ? rect.height : rect.width / imageAspect
+  const contentLeft = rect.left + (rect.width - contentWidth) / 2
+  const contentTop = rect.top + (rect.height - contentHeight) / 2
+  const offsetX = event.clientX - contentLeft
+  const offsetY = event.clientY - contentTop
+  if (offsetX < 0 || offsetX >= contentWidth || offsetY < 0 || offsetY >= contentHeight) {
+    return null
+  }
+
   return {
     x: Math.max(0, Math.min(frameSize.value.width - 1,
-      Math.floor((event.clientX - rect.left) * frameSize.value.width / rect.width))),
+      Math.floor(offsetX * frameSize.value.width / contentWidth))),
     y: Math.max(0, Math.min(frameSize.value.height - 1,
-      Math.floor((event.clientY - rect.top) * frameSize.value.height / rect.height))),
+      Math.floor(offsetY * frameSize.value.height / contentHeight))),
   }
 }
 
