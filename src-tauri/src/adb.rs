@@ -274,8 +274,8 @@ pub async fn adb_connect(
         "control=true".to_string(),
         "video_codec=h264".to_string(),
         "send_device_meta=false".to_string(),
-        "max_size=1920".to_string(),
-        "video_bit_rate=8000000".to_string(),
+        "max_size=2560".to_string(),
+        "video_bit_rate=16000000".to_string(),
         "max_fps=60".to_string(),
     ];
     let mut server_command = Command::new("adb");
