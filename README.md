@@ -1,7 +1,11 @@
-# Tauri + Vue + TypeScript
+# Emulador de Android
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+La aplicación inicia QEMU automáticamente al abrirse. Busca la imagen en este orden:
 
-## Recommended IDE Setup
+1. `android.qcow2` en `$XDG_CONFIG_HOME/canaima-android-emu` o `~/.config/canaima-android-emu`.
+2. La URL definida en `ANDROID_QCOW2_URL`; en ese caso descarga la imagen al directorio de configuración.
+3. Como respaldo de desarrollo, `/home/canaima/vm/android/android.qcow2`, si está disponible.
 
-- [VS Code](https://code.visualstudio.com/) + [Vue - Official](https://marketplace.visualstudio.com/items?itemName=Vue.volar) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+Cuando se defina la URL de distribución, configura `ANDROID_QCOW2_URL` en el entorno de la aplicación. Se requieren `curl`, `qemu-system-x86_64`, `adb` y acceso a KVM.
+
+Si ya hay una sesión escuchando en `127.0.0.1:5555`, la aplicación la reutiliza sin abrir ni descargar una imagen. Al cerrar la ventana, intenta apagar esa instancia con `adb shell poweroff` antes de cerrar.

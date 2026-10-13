@@ -10,6 +10,8 @@ const displayFrame = ref<HTMLDivElement | null>(null)
 const displayCanvas = ref<HTMLCanvasElement | null>(null)
 const inputError = ref('')
 const frameError = ref('')
+const emulatorStatus = ref('Iniciando el emulador Android...')
+const emulatorError = ref('')
 const fps = ref(0)
 const pressedKeys = new Set<number>()
 type ScreenPoint = { x: number; y: number }
@@ -311,7 +313,25 @@ function onPointerCancel() {
   releaseInputs()
 }
 
-onMounted(() => window.addEventListener('blur', releaseInputs))
+async function startAndroidEmulator() {
+  if (!(window as any).__TAURI_INTERNALS__) {
+    emulatorStatus.value = ''
+    return
+  }
+
+  try {
+    emulatorStatus.value = await invoke<string>('start_android_emulator')
+    emulatorError.value = ''
+  } catch (error) {
+    emulatorStatus.value = ''
+    emulatorError.value = String(error)
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('blur', releaseInputs)
+  void startAndroidEmulator()
+})
 onUnmounted(() => {
   window.removeEventListener('blur', releaseInputs)
   releaseInputs()
@@ -374,6 +394,20 @@ onUnmounted(() => {
   width: min(1440px, 100%);
   margin: 0 auto;
   padding: 2.5rem clamp(1rem, 4vw, 3.5rem);
+}
+
+.emulator-status {
+  margin-bottom: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid #d8e1e4;
+  border-radius: 5px;
+  color: #405b65;
+  overflow-wrap: anywhere;
+}
+
+.emulator-status-error {
+  border-color: #d99a9a;
+  color: #8c2828;
 }
 
 .workspace-header {
