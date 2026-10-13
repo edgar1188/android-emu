@@ -6,9 +6,9 @@ use std::{
 use tauri::State;
 use tokio::{net::TcpStream, process::Command, sync::Mutex, time::timeout};
 
-const DEVELOPMENT_IMAGE: &str = "/home/canaima/vm/android/android.qcow2";
 const IMAGE_FILE_NAME: &str = "android.qcow2";
 const IMAGE_URL_ENV: &str = "ANDROID_QCOW2_URL";
+const DEFAULT_IMAGE_URL: &str = "http://localhost:8888/android.qcow2";
 
 pub struct EmulatorAppState {
     started: Mutex<bool>,
@@ -102,31 +102,17 @@ async fn ensure_image() -> Result<(PathBuf, String), String> {
         ));
     }
 
-    if let Ok(url) = env::var(IMAGE_URL_ENV) {
-        if !url.trim().is_empty() {
-            download_image(&url, &config_image).await?;
-            return Ok((
-                config_image.clone(),
-                format!("Imagen descargada en {}", config_image.display()),
-            ));
-        }
-    }
-
-    let development_image = PathBuf::from(DEVELOPMENT_IMAGE);
-    if development_image.is_file() {
-        validate_image(&development_image)?;
-        return Ok((
-            development_image.clone(),
-            format!(
-                "Usando la imagen local de desarrollo: {}",
-                development_image.display()
-            ),
+    let url = env::var(IMAGE_URL_ENV).unwrap_or_else(|_| DEFAULT_IMAGE_URL.to_string());
+    if url.trim().is_empty() {
+        return Err(format!(
+            "No se encontró la imagen y {IMAGE_URL_ENV} está vacío; configura una URL."
         ));
     }
 
-    Err(format!(
-        "No se encontró la imagen. Configura {IMAGE_URL_ENV} con la URL de descarga; \
-         para desarrollo también se acepta {DEVELOPMENT_IMAGE}."
+    download_image(&url, &config_image).await?;
+    Ok((
+        config_image.clone(),
+        format!("Imagen descargada en {}", config_image.display()),
     ))
 }
 
