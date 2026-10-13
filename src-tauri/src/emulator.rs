@@ -165,10 +165,7 @@ async fn ensure_image(app: &AppHandle) -> Result<(PathBuf, String), String> {
     }
 
     download_image(app, &url, &config_image).await?;
-    Ok((
-        config_image.clone(),
-        format!("Imagen descargada en {}", config_image.display()),
-    ))
+    Ok((config_image.clone(), format!("Imagen descargada")))
 }
 
 fn qemu_is_running(pid_file: &Path, image_path: &Path) -> Result<bool, String> {
