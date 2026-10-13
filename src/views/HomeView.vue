@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { Activity, Monitor } from '@lucide/vue'
+import { Activity, Monitor, X } from '@lucide/vue'
 import AdbConnection from '../components/AdbConnection.vue'
 
 const frameSize = ref({ width: 0, height: 0 })
@@ -12,6 +12,8 @@ const inputError = ref('')
 const frameError = ref('')
 const emulatorStatus = ref('Iniciando el emulador Android...')
 const emulatorError = ref('')
+const isStatusDismissed = ref(false)
+const isErrorDismissed = ref(false)
 const isDownloadingImage = ref(false)
 const imageDownloadPercentage = ref<number | null>(null)
 const fps = ref(0)
@@ -28,6 +30,13 @@ let frameRevision = 0
 let reusableFrame: ImageData | undefined
 let fpsWindowFrames = 0
 let fpsWindowStartedAt = performance.now()
+
+watch(emulatorStatus, () => {
+  isStatusDismissed.value = false
+})
+watch(emulatorError, () => {
+  isErrorDismissed.value = false
+})
 
 const androidKeycodes: Record<string, number> = {
   Escape: 111, Backspace: 67, Tab: 61, Enter: 66,
@@ -365,17 +374,25 @@ onUnmounted(() => {
 
     <main class="workspace">
       <div class="floating-messages" aria-live="polite">
-        <div v-if="emulatorStatus" class="emulator-status" role="status">
-          {{ emulatorStatus }}
+        <div v-if="emulatorStatus && !isStatusDismissed" class="emulator-status" role="status">
+          <span>{{ emulatorStatus }}</span>
           <progress v-if="isDownloadingImage" class="image-download-progress"
             :value="imageDownloadPercentage ?? undefined" :max="100"
             aria-label="Progreso de descarga de la imagen Android" />
           <span v-if="isDownloadingImage && imageDownloadPercentage !== null">
             {{ imageDownloadPercentage }}%
           </span>
+          <button class="message-dismiss" type="button" aria-label="Descartar mensaje"
+            @click="isStatusDismissed = true">
+            <X :size="16" aria-hidden="true" />
+          </button>
         </div>
-        <div v-if="emulatorError" class="emulator-status emulator-status-error" role="alert">
-          {{ emulatorError }}
+        <div v-if="emulatorError && !isErrorDismissed" class="emulator-status emulator-status-error" role="alert">
+          <span>{{ emulatorError }}</span>
+          <button class="message-dismiss" type="button" aria-label="Descartar mensaje"
+            @click="isErrorDismissed = true">
+            <X :size="16" aria-hidden="true" />
+          </button>
         </div>
       </div>
 
@@ -476,6 +493,27 @@ onUnmounted(() => {
   border-color: #d99a9a;
   background: rgb(255 245 245 / 96%);
   color: #8c2828;
+}
+
+.message-dismiss {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: currentColor;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.message-dismiss:hover {
+  background: rgb(0 0 0 / 8%);
 }
 
 .workspace-header {
