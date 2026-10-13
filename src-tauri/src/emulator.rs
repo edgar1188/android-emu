@@ -118,7 +118,7 @@ async fn download_image(app: &AppHandle, url: &str, destination: &Path) -> Resul
         return Err(if details.is_empty() {
             format!("No se pudo descargar la imagen desde {url}.")
         } else {
-            format!("No se pudo descargar la imagen: {details}")
+            format!("No se pudo descargar la imagen")
         });
     }
 
@@ -154,10 +154,7 @@ async fn ensure_image(app: &AppHandle) -> Result<(PathBuf, String), String> {
 
     if config_image.exists() {
         validate_image(&config_image)?;
-        return Ok((
-            config_image.clone(),
-            format!("Imagen: {}", config_image.display()),
-        ));
+        return Ok((config_image.clone(), format!("")));
     }
 
     let url = env::var(IMAGE_URL_ENV).unwrap_or_else(|_| DEFAULT_IMAGE_URL.to_string());
