@@ -3,7 +3,6 @@ import { nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { Activity, Monitor } from '@lucide/vue'
-import Navbar from '../components/Navbar.vue'
 import AdbConnection from '../components/AdbConnection.vue'
 
 const frameSize = ref({ width: 0, height: 0 })
@@ -365,17 +364,19 @@ onUnmounted(() => {
   <div class="home-shell">
 
     <main class="workspace">
-      <div v-if="emulatorStatus" class="emulator-status" role="status">
-        {{ emulatorStatus }}
-        <progress v-if="isDownloadingImage" class="image-download-progress"
-          :value="imageDownloadPercentage ?? undefined" :max="100"
-          aria-label="Progreso de descarga de la imagen Android" />
-        <span v-if="isDownloadingImage && imageDownloadPercentage !== null">
-          {{ imageDownloadPercentage }}%
-        </span>
-      </div>
-      <div v-if="emulatorError" class="emulator-status emulator-status-error" role="alert">
-        {{ emulatorError }}
+      <div class="floating-messages" aria-live="polite">
+        <div v-if="emulatorStatus" class="emulator-status" role="status">
+          {{ emulatorStatus }}
+          <progress v-if="isDownloadingImage" class="image-download-progress"
+            :value="imageDownloadPercentage ?? undefined" :max="100"
+            aria-label="Progreso de descarga de la imagen Android" />
+          <span v-if="isDownloadingImage && imageDownloadPercentage !== null">
+            {{ imageDownloadPercentage }}%
+          </span>
+        </div>
+        <div v-if="emulatorError" class="emulator-status emulator-status-error" role="alert">
+          {{ emulatorError }}
+        </div>
       </div>
 
       <div class="workspace-grid">
@@ -420,14 +421,32 @@ onUnmounted(() => {
 
 <style scoped>
 .home-shell {
-  min-height: 100vh;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
   background: var(--canaima-bg-light);
 }
 
 .workspace {
-  width: min(1440px, 100%);
-  margin: 0 auto;
-  padding: 2.5rem clamp(1rem, 4vw, 3.5rem);
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+.floating-messages {
+  position: fixed;
+  z-index: 10;
+  top: 1rem;
+  right: 1rem;
+  display: flex;
+  width: min(26rem, calc(100vw - 2rem));
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.5rem;
+  pointer-events: none;
 }
 
 .image-download-progress {
@@ -439,16 +458,23 @@ onUnmounted(() => {
 }
 
 .emulator-status {
-  margin-bottom: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.75rem;
   padding: 0.75rem 1rem;
-  border: 1px solid #d8e1e4;
-  border-radius: 5px;
+  border: 1px solid rgb(216 225 228 / 90%);
+  border-radius: 8px;
+  background: rgb(255 255 255 / 94%);
+  box-shadow: 0 4px 18px rgb(0 0 0 / 18%);
   color: #405b65;
   overflow-wrap: anywhere;
+  backdrop-filter: blur(8px);
 }
 
 .emulator-status-error {
   border-color: #d99a9a;
+  background: rgb(255 245 245 / 96%);
   color: #8c2828;
 }
 
@@ -502,10 +528,8 @@ h1 {
 }
 
 .workspace-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
-  gap: 1.25rem;
-  align-items: start;
+  width: 100%;
+  height: 100%;
 }
 
 .display-panel,
@@ -516,17 +540,18 @@ h1 {
 }
 
 .display-panel {
-  min-height: 590px;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
   overflow: hidden;
-  background: linear-gradient(180deg, rgba(12, 20, 24, 0.04), rgba(12, 20, 24, 0.02));
+  border: 0;
+  border-radius: 0;
+  background: #0b1216;
 }
 
 .panel-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1rem 1.25rem;
-  border-bottom: 1px solid #e5ecee;
+  display: none;
 }
 
 .panel-title {
@@ -549,35 +574,39 @@ h1 {
 
 .display-placeholder {
   display: flex;
-  min-height: 535px;
+  position: absolute;
+  inset: 0;
   align-items: center;
   justify-content: center;
   flex-direction: column;
   gap: 0.7rem;
   padding: 2rem;
-  background: #f7fafb;
+  background: #0b1216;
   color: #87a0a8;
   text-align: center;
 }
 
 .display-shell {
-  padding: 1rem;
-  background: linear-gradient(180deg, rgba(7, 14, 18, 0.02), rgba(7, 14, 18, 0.06));
+  width: 100%;
+  height: 100%;
 }
 
 .display-frame {
   position: relative;
-  display: block;
+  display: flex;
   width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
   padding: 0;
   background: #0b1216;
   cursor: crosshair;
   outline: none;
   touch-action: none;
   user-select: none;
-  border: 1px solid rgba(17, 39, 45, 0.2);
-  border-radius: 10px;
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04), 0 14px 32px rgba(14, 23, 27, 0.08);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
   overflow: hidden;
 }
 
@@ -636,15 +665,17 @@ h1 {
 .display-frame canvas {
   display: block;
   width: 100%;
-  height: auto;
+  height: 100%;
+  object-fit: contain;
   pointer-events: auto;
   background: #0b1216;
 }
 
 .input-error {
   position: absolute;
-  top: 0.5rem;
-  left: 0.5rem;
+  z-index: 3;
+  bottom: 1rem;
+  left: 1rem;
   max-width: calc(100% - 1rem);
   padding: 0.4rem 0.6rem;
   background: #7b2525;
@@ -652,7 +683,7 @@ h1 {
   overflow-wrap: anywhere;
 }
 
-.display-frame span {
+.display-frame > span {
   position: absolute;
   right: 1rem;
   bottom: 1rem;
@@ -664,7 +695,7 @@ h1 {
 }
 
 .display-placeholder strong {
-  color: #49616a;
+  color: #d3e0e4;
 }
 
 .display-placeholder span {
@@ -738,7 +769,7 @@ html.dark & .panel-heading {
 }
 
 html.dark & .display-placeholder {
-  background: #182329;
+  background: #0b1216;
 }
 
 html.dark & .session-state {
@@ -757,16 +788,5 @@ html.dark & dl div {
     gap: 1rem;
   }
 
-  .workspace-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .display-panel {
-    min-height: 420px;
-  }
-
-  .display-placeholder {
-    min-height: 365px;
-  }
 }
 </style>
