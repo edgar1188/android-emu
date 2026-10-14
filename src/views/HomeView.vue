@@ -28,6 +28,9 @@ let pointerMoveFrame = 0
 let inputQueue: Promise<unknown> = Promise.resolve()
 let frameRevision = 0
 let reusableFrame: ImageData | undefined
+let sourceFrameCanvas: HTMLCanvasElement | undefined
+let sourceFrameContext: CanvasRenderingContext2D | null = null
+let frameResizeObserver: ResizeObserver | undefined
 let fpsWindowFrames = 0
 let fpsWindowStartedAt = performance.now()
 let statusDismissTimer: ReturnType<typeof setTimeout> | undefined
@@ -251,6 +254,57 @@ function recordFrame() {
   }
 }
 
+function renderSourceFrame() {
+  const canvas = displayCanvas.value
+  const source = sourceFrameCanvas
+  if (!canvas || !source || !source.width || !source.height) return
+
+  const rect = canvas.getBoundingClientRect()
+  if (!rect.width || !rect.height) return
+
+  const pixelRatio = window.devicePixelRatio || 1
+  const targetWidth = Math.max(1, Math.round(rect.width * pixelRatio))
+  const targetHeight = Math.max(1, Math.round(rect.height * pixelRatio))
+  if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+    canvas.width = targetWidth
+    canvas.height = targetHeight
+  }
+
+  const context = canvas.getContext('2d', { alpha: false })
+  if (!context) {
+    frameError.value = 'No se pudo inicializar el canvas de vídeo.'
+    return
+  }
+
+  const scale = Math.min(targetWidth / source.width, targetHeight / source.height)
+  const width = source.width * scale
+  const height = source.height * scale
+  context.imageSmoothingEnabled = true
+  context.imageSmoothingQuality = 'high'
+  context.clearRect(0, 0, targetWidth, targetHeight)
+  context.drawImage(
+    source,
+    (targetWidth - width) / 2,
+    (targetHeight - height) / 2,
+    width,
+    height,
+  )
+}
+
+function ensureSourceFrameCanvas(width: number, height: number) {
+  if (!sourceFrameCanvas) {
+    sourceFrameCanvas = document.createElement('canvas')
+    frameResizeObserver = new ResizeObserver(renderSourceFrame)
+  }
+  if (sourceFrameCanvas.width !== width || sourceFrameCanvas.height !== height) {
+    sourceFrameCanvas.width = width
+    sourceFrameCanvas.height = height
+  }
+  sourceFrameContext = sourceFrameCanvas.getContext('2d', { alpha: false })
+  if (!displayCanvas.value) return
+  frameResizeObserver?.observe(displayCanvas.value)
+}
+
 async function updateFrame(rawFrame: ArrayBuffer | Uint8Array) {
   const buffer = rawFrame instanceof ArrayBuffer
     ? rawFrame
@@ -283,18 +337,15 @@ async function updateFrame(rawFrame: ArrayBuffer | Uint8Array) {
         return
       }
 
-      const canvas = displayCanvas.value
-      const context = canvas?.getContext('2d', { alpha: false })
-      if (!canvas || !context) {
+      ensureSourceFrameCanvas(nextSize.width, nextSize.height)
+      if (!sourceFrameCanvas || !sourceFrameContext) {
         frameError.value = 'No se pudo inicializar el canvas de vídeo.'
         URL.revokeObjectURL(objectUrl)
         return
       }
 
-      canvas.width = nextSize.width
-      canvas.height = nextSize.height
-      context.clearRect(0, 0, canvas.width, canvas.height)
-      context.drawImage(image, 0, 0)
+      sourceFrameContext.drawImage(image, 0, 0)
+      renderSourceFrame()
       recordFrame()
       frameError.value = ''
       URL.revokeObjectURL(objectUrl)
@@ -325,24 +376,19 @@ async function updateFrame(rawFrame: ArrayBuffer | Uint8Array) {
     await nextTick()
   }
 
-  const canvas = displayCanvas.value
-  const context = canvas?.getContext('2d', { alpha: false })
-  if (!canvas || !context) {
-    frameError.value = 'No se pudo inicializar el canvas de vídeo.'
-    return
-  }
-
   if (revision !== frameRevision) return
 
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width
-    canvas.height = height
+  ensureSourceFrameCanvas(width, height)
+  if (!sourceFrameCanvas || !sourceFrameContext) {
+    frameError.value = 'No se pudo inicializar el canvas de vídeo.'
+    return
   }
   if (!reusableFrame || reusableFrame.width !== width || reusableFrame.height !== height) {
     reusableFrame = new ImageData(width, height)
   }
   reusableFrame.data.set(new Uint8ClampedArray(buffer, 12, pixelLength))
-  context.putImageData(reusableFrame, 0, 0)
+  sourceFrameContext.putImageData(reusableFrame, 0, 0)
+  renderSourceFrame()
   recordFrame()
   frameError.value = ''
 }
@@ -390,6 +436,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   window.removeEventListener('blur', releaseInputs)
+  frameResizeObserver?.disconnect()
   unlistenDownloadProgress?.()
   if (statusDismissTimer) clearTimeout(statusDismissTimer)
   if (errorDismissTimer) clearTimeout(errorDismissTimer)
