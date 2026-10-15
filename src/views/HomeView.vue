@@ -495,7 +495,8 @@ onUnmounted(() => {
                 aria-label="Pantalla de Android" @pointerdown="onPointerDown" @pointermove="onPointerMove"
                 @pointerup="onPointerUp" @pointercancel="onPointerCancel" @wheel.prevent="onWheel"
                 @contextmenu.prevent />
-              <span>{{ frameSize.width }} x {{ frameSize.height }} · {{ fps }} FPS</span>
+              <!--<span>{{ frameSize.width }} x {{ frameSize.height }} · {{ fps }} FPS</span>-->
+              <span>{{ fps }} FPS</span>
               <small v-if="inputError" class="input-error" role="alert">{{ inputError }}</small>
               <small v-if="frameError" class="input-error" role="alert">{{ frameError }}</small>
             </div>
