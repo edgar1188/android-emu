@@ -309,6 +309,8 @@ pub async fn start_android_emulator(
             let output = Command::new("qemu-system-x86_64")
                 .args([
                     "-nodefaults",
+                    "-name",
+                    "Canaima Android Emu",
                     "-cpu",
                     "host",
                     "-m",
