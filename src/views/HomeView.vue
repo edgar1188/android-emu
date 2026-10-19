@@ -355,7 +355,7 @@ async function updateFrame(rawFrame: ArrayBuffer | Uint8Array) {
 
   if (isPngFrame) {
     try {
-      const blob = new Blob([bytes], { type: 'image/png' })
+      const blob = new Blob([new Uint8Array(bytes).buffer], { type: 'image/png' })
       const objectUrl = URL.createObjectURL(blob)
       const image = await new Promise<HTMLImageElement>((resolve, reject) => {
         const img = new Image()
