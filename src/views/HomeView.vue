@@ -10,8 +10,10 @@ import {
   ArrowUp,
   Ellipsis,
   EllipsisVertical,
+  House,
   Moon,
   Monitor,
+  PanelsTopLeft,
   Power,
   Sun,
   Volume1,
@@ -582,6 +584,21 @@ onUnmounted(() => {
               </div>
               <div class="hardware-control-buttons"
                 :class="{ 'hardware-control-buttons-horizontal': hardwareControlsPosition === 'top' || hardwareControlsPosition === 'bottom' }">
+                <button class="hardware-control" type="button" aria-label="Atrás" title="Atrás"
+                  @click="pressAndroidKey(4)">
+                  <ArrowLeft :size="19" aria-hidden="true" />
+                  <span>Atrás</span>
+                </button>
+                <button class="hardware-control" type="button" aria-label="Inicio" title="Inicio"
+                  @click="pressAndroidKey(3)">
+                  <House :size="19" aria-hidden="true" />
+                  <span>Inicio</span>
+                </button>
+                <button class="hardware-control" type="button" aria-label="Aplicaciones recientes"
+                  title="Aplicaciones recientes" @click="pressAndroidKey(187)">
+                  <PanelsTopLeft :size="19" aria-hidden="true" />
+                  <span>Recientes</span>
+                </button>
                 <button class="hardware-control" type="button" aria-label="Encendido" title="Encendido"
                   @click="pressAndroidKey(26)">
                   <Power :size="19" aria-hidden="true" />
