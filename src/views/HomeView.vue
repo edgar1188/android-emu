@@ -812,6 +812,7 @@ h1 {
 .hardware-controls-bottom {
   left: 50%;
   align-items: center;
+  flex-direction: row;
   transform: translateX(-50%);
 }
 
