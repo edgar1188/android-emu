@@ -2,7 +2,7 @@
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { Activity, Monitor, Power, Volume1, Volume2, X } from '@lucide/vue'
+import { Activity, Ellipsis, EllipsisVertical, Monitor, Power, Volume1, Volume2, X } from '@lucide/vue'
 import AdbConnection from '../components/AdbConnection.vue'
 
 const frameSize = ref({ width: 0, height: 0 })
@@ -17,6 +17,7 @@ const isErrorDismissed = ref(false)
 const isDownloadingImage = ref(false)
 const imageDownloadPercentage = ref<number | null>(null)
 const fps = ref(0)
+const showHardwareControls = ref(false)
 let unlistenDownloadProgress: (() => void) | undefined
 const pressedKeys = new Set<number>()
 type ScreenPoint = { x: number; y: number }
@@ -505,19 +506,28 @@ onUnmounted(() => {
               <small v-if="inputError" class="input-error" role="alert">{{ inputError }}</small>
               <small v-if="frameError" class="input-error" role="alert">{{ frameError }}</small>
             </div>
-            <div class="hardware-controls" role="group" aria-label="Controles físicos de Android">
-              <button class="hardware-control" type="button" aria-label="Encendido"
-                title="Encendido" @click="pressAndroidKey(26)">
+            <button class="hardware-toggle" type="button"
+              :aria-label="showHardwareControls ? 'Ocultar controles físicos' : 'Mostrar controles físicos'"
+              :aria-expanded="showHardwareControls" aria-controls="android-hardware-controls"
+              :title="showHardwareControls ? 'Ocultar controles físicos' : 'Mostrar controles físicos'"
+              @click="showHardwareControls = !showHardwareControls">
+              <Ellipsis :size="21" aria-hidden="true" v-if="!showHardwareControls" />
+              <EllipsisVertical :size="21" aria-hidden="true" v-else="showHardwareControls" />
+            </button>
+            <div v-if="showHardwareControls" id="android-hardware-controls" class="hardware-controls" role="group"
+              aria-label="Controles físicos de Android">
+              <button class="hardware-control" type="button" aria-label="Encendido" title="Encendido"
+                @click="pressAndroidKey(26)">
                 <Power :size="19" aria-hidden="true" />
                 <span>Encendido</span>
               </button>
-              <button class="hardware-control" type="button" aria-label="Subir volumen"
-                title="Subir volumen" @click="pressAndroidKey(24)">
+              <button class="hardware-control" type="button" aria-label="Subir volumen" title="Subir volumen"
+                @click="pressAndroidKey(24)">
                 <Volume2 :size="19" aria-hidden="true" />
                 <span>Volumen +</span>
               </button>
-              <button class="hardware-control" type="button" aria-label="Bajar volumen"
-                title="Bajar volumen" @click="pressAndroidKey(25)">
+              <button class="hardware-control" type="button" aria-label="Bajar volumen" title="Bajar volumen"
+                @click="pressAndroidKey(25)">
                 <Volume1 :size="19" aria-hidden="true" />
                 <span>Volumen −</span>
               </button>
@@ -736,6 +746,35 @@ h1 {
   flex-direction: column;
   gap: 0.5rem;
   transform: translateY(-50%);
+}
+
+.hardware-toggle {
+  position: absolute;
+  z-index: 4;
+  top: 1rem;
+  right: 1rem;
+  display: inline-flex;
+  width: 3.25rem;
+  height: 3.25rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid rgb(255 255 255 / 24%);
+  border-radius: 50%;
+  background: rgb(12 22 27 / 88%);
+  color: #f1f7f8;
+  cursor: pointer;
+  touch-action: manipulation;
+  backdrop-filter: blur(8px);
+}
+
+.hardware-toggle:hover {
+  background: rgb(29 49 57 / 96%);
+}
+
+.hardware-toggle:focus-visible {
+  outline: 2px solid var(--canaima-primary);
+  outline-offset: 2px;
 }
 
 .hardware-control {
