@@ -2,7 +2,20 @@
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { Activity, Ellipsis, EllipsisVertical, Monitor, Power, Volume1, Volume2, X } from '@lucide/vue'
+import {
+  Activity,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  Ellipsis,
+  EllipsisVertical,
+  Monitor,
+  Power,
+  Volume1,
+  Volume2,
+  X,
+} from '@lucide/vue'
 import AdbConnection from '../components/AdbConnection.vue'
 
 const frameSize = ref({ width: 0, height: 0 })
@@ -530,15 +543,29 @@ onUnmounted(() => {
             <div v-if="showHardwareControls" id="android-hardware-controls" class="hardware-controls"
               :class="`hardware-controls-${hardwareControlsPosition}`" role="group"
               aria-label="Controles físicos de Android">
-              <label class="hardware-position">
-                <span>Posición</span>
-                <select v-model="hardwareControlsPosition" aria-label="Posición de los botones">
-                  <option value="left">Izquierda</option>
-                  <option value="right">Derecha</option>
-                  <option value="top">Arriba</option>
-                  <option value="bottom">Abajo</option>
-                </select>
-              </label>
+              <div class="hardware-position" role="group" aria-label="Elegir posición de los botones">
+                <button class="position-arrow" :class="{ 'position-arrow-active': hardwareControlsPosition === 'top' }"
+                  type="button" aria-label="Colocar arriba" title="Colocar arriba"
+                  :aria-pressed="hardwareControlsPosition === 'top'" @click="hardwareControlsPosition = 'top'">
+                  <ArrowUp :size="16" aria-hidden="true" />
+                </button>
+                <button class="position-arrow" :class="{ 'position-arrow-active': hardwareControlsPosition === 'left' }"
+                  type="button" aria-label="Colocar a la izquierda" title="Colocar a la izquierda"
+                  :aria-pressed="hardwareControlsPosition === 'left'" @click="hardwareControlsPosition = 'left'">
+                  <ArrowLeft :size="16" aria-hidden="true" />
+                </button>
+                <span class="position-indicator" aria-hidden="true" />
+                <button class="position-arrow" :class="{ 'position-arrow-active': hardwareControlsPosition === 'right' }"
+                  type="button" aria-label="Colocar a la derecha" title="Colocar a la derecha"
+                  :aria-pressed="hardwareControlsPosition === 'right'" @click="hardwareControlsPosition = 'right'">
+                  <ArrowRight :size="16" aria-hidden="true" />
+                </button>
+                <button class="position-arrow" :class="{ 'position-arrow-active': hardwareControlsPosition === 'bottom' }"
+                  type="button" aria-label="Colocar abajo" title="Colocar abajo"
+                  :aria-pressed="hardwareControlsPosition === 'bottom'" @click="hardwareControlsPosition = 'bottom'">
+                  <ArrowDown :size="16" aria-hidden="true" />
+                </button>
+              </div>
               <div class="hardware-control-buttons"
                 :class="{ 'hardware-control-buttons-horizontal': hardwareControlsPosition === 'top' || hardwareControlsPosition === 'bottom' }">
                 <button class="hardware-control" type="button" aria-label="Encendido" title="Encendido"
@@ -798,32 +825,64 @@ h1 {
 }
 
 .hardware-position {
-  display: flex;
+  display: grid;
+  grid-template: repeat(3, 2rem) / repeat(3, 2rem);
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.35rem 0.5rem;
+  justify-items: center;
+  padding: 0.25rem;
   border: 1px solid rgb(255 255 255 / 22%);
-  border-radius: 0.5rem;
+  border-radius: 0.75rem;
   background: rgb(12 22 27 / 88%);
-  color: #f1f7f8;
-  font-size: 0.7rem;
   backdrop-filter: blur(8px);
 }
 
-.hardware-position select {
-  width: auto;
-  height: 1.75rem;
-  margin: 0;
-  padding: 0 1.5rem 0 0.35rem;
+.position-arrow {
+  display: inline-flex;
+  width: 1.9rem;
+  height: 1.9rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   border: 0;
-  background-color: transparent;
+  border-radius: 0.45rem;
+  background: transparent;
   color: #f1f7f8;
-  font-size: 0.7rem;
+  cursor: pointer;
+  touch-action: manipulation;
 }
 
-.hardware-position option {
-  background: #0c161b;
-  color: #f1f7f8;
+.position-arrow:nth-child(1) {
+  grid-area: 1 / 2;
+}
+
+.position-arrow:nth-child(2) {
+  grid-area: 2 / 1;
+}
+
+.position-arrow:nth-child(4) {
+  grid-area: 2 / 3;
+}
+
+.position-arrow:nth-child(5) {
+  grid-area: 3 / 2;
+}
+
+.position-arrow:hover,
+.position-arrow-active {
+  background: rgb(255 255 255 / 18%);
+}
+
+.position-arrow:focus-visible {
+  outline: 2px solid var(--canaima-primary);
+  outline-offset: 1px;
+}
+
+.position-indicator {
+  grid-area: 2 / 2;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: rgb(241 247 248 / 72%);
 }
 
 .hardware-control-buttons {
