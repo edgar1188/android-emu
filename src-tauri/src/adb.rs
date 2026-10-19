@@ -536,3 +536,34 @@ pub async fn adb_input_swipe(
 pub async fn adb_input_key(keycode: u32, state: State<'_, AdbAppState>) -> Result<(), String> {
     run_input(state, &["keyevent".into(), keycode.to_string()]).await
 }
+
+#[tauri::command]
+pub async fn adb_set_dark_mode(is_dark: bool, state: State<'_, AdbAppState>) -> Result<(), String> {
+    let session = state.session.lock().await;
+    let serial = session
+        .as_ref()
+        .map(|session| session.serial.clone())
+        .ok_or_else(|| "No hay un dispositivo ADB conectado.".to_string())?;
+    drop(session);
+
+    let args = vec![
+        "-s".to_string(),
+        serial,
+        "shell".to_string(),
+        "cmd".to_string(),
+        "uimode".to_string(),
+        "night".to_string(),
+        if is_dark { "yes" } else { "no" }.to_string(),
+    ];
+    let output = run_adb_owned(&args).await?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let details = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if details.is_empty() {
+            "No se pudo cambiar el modo de apariencia de Android.".to_string()
+        } else {
+            details
+        })
+    }
+}

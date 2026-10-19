@@ -10,14 +10,18 @@ import {
   ArrowUp,
   Ellipsis,
   EllipsisVertical,
+  Moon,
   Monitor,
   Power,
+  Sun,
   Volume1,
   Volume2,
   X,
 } from '@lucide/vue'
 import AdbConnection from '../components/AdbConnection.vue'
+import { useAppStore } from '../stores/useAppStore'
 
+const appStore = useAppStore()
 const frameSize = ref({ width: 0, height: 0 })
 const displayFrame = ref<HTMLDivElement | null>(null)
 const displayCanvas = ref<HTMLCanvasElement | null>(null)
@@ -61,6 +65,9 @@ let statusDismissTimer: ReturnType<typeof setTimeout> | undefined
 let errorDismissTimer: ReturnType<typeof setTimeout> | undefined
 let dismissableTime = 10000
 
+watch(() => appStore.isDarkMode, (isDark) => {
+  queueInput('adb_set_dark_mode', { isDark })
+})
 watch(hardwareControlsPosition, (position) => {
   localStorage.setItem('hardware-controls-position', position)
 }, { flush: 'sync' })
@@ -460,6 +467,7 @@ async function startAndroidEmulator() {
 
 function onAdbConnected() {
   emulatorStatus.value = 'Android conectado.'
+  queueInput('adb_set_dark_mode', { isDark: appStore.isDarkMode })
 }
 
 onMounted(() => {
@@ -586,6 +594,15 @@ onUnmounted(() => {
                   <Volume1 :size="19" aria-hidden="true" />
                   <span>Volumen −</span>
                 </button>
+                <button class="hardware-control" type="button"
+                  :aria-label="appStore.isDarkMode ? 'Activar modo claro' : 'Activar modo oscuro'"
+                  :title="appStore.isDarkMode ? 'Activar modo claro' : 'Activar modo oscuro'"
+                  :aria-pressed="appStore.isDarkMode" @click="appStore.toggleDarkMode()">
+                  <Sun v-if="appStore.isDarkMode" :size="19" aria-hidden="true" />
+                  <Moon v-else :size="19" aria-hidden="true" />
+                  <span v-if="appStore.isDarkMode">Modo claro</span>
+                  <span v-else>Modo oscuro</span>
+                </button>
               </div>
             </div>
           </div>
@@ -656,6 +673,18 @@ onUnmounted(() => {
   border-color: #d99a9a;
   background: rgb(255 245 245 / 96%);
   color: #8c2828;
+}
+
+html.dark & .emulator-status {
+  border-color: rgb(75 94 102 / 90%);
+  background: rgb(20 31 36 / 96%);
+  color: #d8e6e9;
+}
+
+html.dark & .emulator-status-error {
+  border-color: #794b4b;
+  background: rgb(54 30 32 / 96%);
+  color: #ffcaca;
 }
 
 .message-dismiss {
@@ -959,6 +988,29 @@ h1 {
   font-size: 0.62rem;
   line-height: 1;
   white-space: nowrap;
+}
+
+html:not(.dark) & .hardware-control,
+html:not(.dark) & .hardware-toggle,
+html:not(.dark) & .hardware-position {
+  border-color: rgb(255 255 255 / 82%);
+  background: rgb(239 246 248 / 94%);
+  color: #263b43;
+}
+
+html:not(.dark) & .hardware-control:hover,
+html:not(.dark) & .hardware-toggle:hover,
+html:not(.dark) & .position-arrow:hover,
+html:not(.dark) & .position-arrow-active {
+  background: #d8e8ec;
+}
+
+html:not(.dark) & .position-arrow {
+  color: #263b43;
+}
+
+html:not(.dark) & .position-indicator {
+  background: #526a72;
 }
 
 .display-frame {

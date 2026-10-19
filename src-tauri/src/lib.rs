@@ -70,6 +70,7 @@ pub fn run() {
             adb::adb_input_tap,
             adb::adb_input_swipe,
             adb::adb_input_key,
+            adb::adb_set_dark_mode,
             adb::scrcpy_input_key,
             adb::scrcpy_input_touch,
             adb::scrcpy_input_scroll,
