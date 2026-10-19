@@ -367,7 +367,7 @@ pub async fn start_android_emulator(
 
     wait_for_adb_connection().await?;
     *started = true;
-    Ok(format!("{qemu_status} Android conectado."))
+    Ok(qemu_status)
 }
 
 pub async fn shutdown_android_emulator() -> Result<(), String> {

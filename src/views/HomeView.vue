@@ -29,6 +29,7 @@ const inputError = ref('')
 const frameError = ref('')
 const emulatorStatus = ref('Iniciando el emulador Android...')
 const emulatorError = ref('')
+const isAndroidConnected = ref(false)
 const isStatusDismissed = ref(false)
 const isErrorDismissed = ref(false)
 const isDownloadingImage = ref(false)
@@ -455,7 +456,8 @@ async function startAndroidEmulator() {
       },
     )
     emulatorStatus.value = 'Iniciando, esperando conexión...'
-    emulatorStatus.value = await invoke<string>('start_android_emulator')
+    const startupStatus = await invoke<string>('start_android_emulator')
+    if (!isAndroidConnected.value) emulatorStatus.value = startupStatus
     emulatorError.value = ''
   } catch (error) {
     emulatorStatus.value = 'No se pudo iniciar el emulador.'
@@ -466,6 +468,7 @@ async function startAndroidEmulator() {
 }
 
 function onAdbConnected() {
+  isAndroidConnected.value = true
   emulatorStatus.value = 'Android conectado.'
   queueInput('adb_set_dark_mode', { isDark: appStore.isDarkMode })
 }
