@@ -2,7 +2,7 @@
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
-import { Activity, Monitor, X } from '@lucide/vue'
+import { Activity, Monitor, Power, Volume1, Volume2, X } from '@lucide/vue'
 import AdbConnection from '../components/AdbConnection.vue'
 
 const frameSize = ref({ width: 0, height: 0 })
@@ -86,6 +86,11 @@ function queueInput(command: string, payload: Record<string, number | string | b
     .then(() => invoke(command, payload))
     .then(() => { inputError.value = '' })
     .catch((error: unknown) => { inputError.value = String(error) })
+}
+
+function pressAndroidKey(keycode: number) {
+  queueInput('scrcpy_input_key', { keycode, down: true, metaState: 0 })
+  queueInput('scrcpy_input_key', { keycode, down: false, metaState: 0 })
 }
 
 function pointerCoordinates(event: { clientX: number; clientY: number }) {
@@ -500,6 +505,23 @@ onUnmounted(() => {
               <small v-if="inputError" class="input-error" role="alert">{{ inputError }}</small>
               <small v-if="frameError" class="input-error" role="alert">{{ frameError }}</small>
             </div>
+            <div class="hardware-controls" role="group" aria-label="Controles físicos de Android">
+              <button class="hardware-control" type="button" aria-label="Encendido"
+                title="Encendido" @click="pressAndroidKey(26)">
+                <Power :size="19" aria-hidden="true" />
+                <span>Encendido</span>
+              </button>
+              <button class="hardware-control" type="button" aria-label="Subir volumen"
+                title="Subir volumen" @click="pressAndroidKey(24)">
+                <Volume2 :size="19" aria-hidden="true" />
+                <span>Volumen +</span>
+              </button>
+              <button class="hardware-control" type="button" aria-label="Bajar volumen"
+                title="Bajar volumen" @click="pressAndroidKey(25)">
+                <Volume1 :size="19" aria-hidden="true" />
+                <span>Volumen −</span>
+              </button>
+            </div>
           </div>
         </section>
 
@@ -700,8 +722,53 @@ h1 {
 }
 
 .display-shell {
+  position: relative;
   width: 100%;
   height: 100%;
+}
+
+.hardware-controls {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  right: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  transform: translateY(-50%);
+}
+
+.hardware-control {
+  display: flex;
+  min-width: 3.25rem;
+  min-height: 3.25rem;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.45rem;
+  border: 1px solid rgb(255 255 255 / 22%);
+  border-radius: 0.6rem;
+  background: rgb(12 22 27 / 82%);
+  color: #f1f7f8;
+  cursor: pointer;
+  touch-action: manipulation;
+  backdrop-filter: blur(8px);
+}
+
+.hardware-control:hover {
+  background: rgb(29 49 57 / 94%);
+}
+
+.hardware-control:focus-visible {
+  outline: 2px solid var(--canaima-primary);
+  outline-offset: 2px;
+}
+
+.hardware-control span {
+  font-size: 0.62rem;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .display-frame {
