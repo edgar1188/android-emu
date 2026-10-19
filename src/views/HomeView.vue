@@ -489,7 +489,7 @@ onUnmounted(() => {
   <div class="home-shell">
 
     <main class="workspace">
-      <div class="floating-messages" aria-live="polite">
+      <div class="floating-messages" :class="{ 'floating-messages-dark': appStore.isDarkMode }" aria-live="polite">
         <div v-if="emulatorStatus && !isStatusDismissed" class="emulator-status" role="status">
           <span>{{ emulatorStatus }}</span>
           <progress v-if="isDownloadingImage" class="image-download-progress"
@@ -636,8 +636,8 @@ onUnmounted(() => {
 .floating-messages {
   position: fixed;
   z-index: 10;
-  top: 1rem;
   right: 1rem;
+  top: 1rem;
   display: flex;
   width: min(26rem, calc(100vw - 2rem));
   flex-direction: column;
@@ -662,11 +662,17 @@ onUnmounted(() => {
   padding: 0.75rem 1rem;
   border: 1px solid rgb(216 225 228 / 90%);
   border-radius: 8px;
-  background: rgb(255 255 255 / 94%);
+  background: var(--canaima-surface-light);
   box-shadow: 0 4px 18px rgb(0 0 0 / 18%);
-  color: #405b65;
+  color: var(--canaima-text-dark);
   overflow-wrap: anywhere;
   backdrop-filter: blur(8px);
+}
+
+.floating-messages-dark .emulator-status {
+  border-color: #34444a;
+  background: var(--canaima-surface-dark);
+  color: var(--canaima-text-light);
 }
 
 .emulator-status-error {
@@ -675,15 +681,9 @@ onUnmounted(() => {
   color: #8c2828;
 }
 
-html.dark & .emulator-status {
-  border-color: rgb(75 94 102 / 90%);
-  background: rgb(20 31 36 / 96%);
-  color: #d8e6e9;
-}
-
-html.dark & .emulator-status-error {
+.floating-messages-dark .emulator-status-error {
   border-color: #794b4b;
-  background: rgb(54 30 32 / 96%);
+  background: #361e20;
   color: #ffcaca;
 }
 
