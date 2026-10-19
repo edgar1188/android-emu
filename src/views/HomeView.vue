@@ -59,6 +59,7 @@ let fpsWindowFrames = 0
 let fpsWindowStartedAt = performance.now()
 let statusDismissTimer: ReturnType<typeof setTimeout> | undefined
 let errorDismissTimer: ReturnType<typeof setTimeout> | undefined
+let dismissableTime = 10000
 
 watch(hardwareControlsPosition, (position) => {
   localStorage.setItem('hardware-controls-position', position)
@@ -69,7 +70,7 @@ watch([emulatorStatus, isDownloadingImage], () => {
   if (emulatorStatus.value && !isDownloadingImage.value) {
     statusDismissTimer = setTimeout(() => {
       isStatusDismissed.value = true
-    }, 5000)
+    }, dismissableTime)
   }
 })
 watch(emulatorError, () => {
@@ -78,7 +79,7 @@ watch(emulatorError, () => {
   if (emulatorError.value) {
     errorDismissTimer = setTimeout(() => {
       isErrorDismissed.value = true
-    }, 5000)
+    }, dismissableTime)
   }
 })
 
@@ -555,14 +556,16 @@ onUnmounted(() => {
                   <ArrowLeft :size="16" aria-hidden="true" />
                 </button>
                 <span class="position-indicator" aria-hidden="true" />
-                <button class="position-arrow" :class="{ 'position-arrow-active': hardwareControlsPosition === 'right' }"
-                  type="button" aria-label="Colocar a la derecha" title="Colocar a la derecha"
+                <button class="position-arrow"
+                  :class="{ 'position-arrow-active': hardwareControlsPosition === 'right' }" type="button"
+                  aria-label="Colocar a la derecha" title="Colocar a la derecha"
                   :aria-pressed="hardwareControlsPosition === 'right'" @click="hardwareControlsPosition = 'right'">
                   <ArrowRight :size="16" aria-hidden="true" />
                 </button>
-                <button class="position-arrow" :class="{ 'position-arrow-active': hardwareControlsPosition === 'bottom' }"
-                  type="button" aria-label="Colocar abajo" title="Colocar abajo"
-                  :aria-pressed="hardwareControlsPosition === 'bottom'" @click="hardwareControlsPosition = 'bottom'">
+                <button class="position-arrow"
+                  :class="{ 'position-arrow-active': hardwareControlsPosition === 'bottom' }" type="button"
+                  aria-label="Colocar abajo" title="Colocar abajo" :aria-pressed="hardwareControlsPosition === 'bottom'"
+                  @click="hardwareControlsPosition = 'bottom'">
                   <ArrowDown :size="16" aria-hidden="true" />
                 </button>
               </div>
