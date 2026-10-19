@@ -18,6 +18,16 @@ const isDownloadingImage = ref(false)
 const imageDownloadPercentage = ref<number | null>(null)
 const fps = ref(0)
 const showHardwareControls = ref(false)
+type HardwareControlsPosition = 'left' | 'right' | 'top' | 'bottom'
+const savedHardwareControlsPosition = localStorage.getItem('hardware-controls-position')
+const hardwareControlsPosition = ref<HardwareControlsPosition>(
+  savedHardwareControlsPosition === 'left'
+    || savedHardwareControlsPosition === 'right'
+    || savedHardwareControlsPosition === 'top'
+    || savedHardwareControlsPosition === 'bottom'
+    ? savedHardwareControlsPosition
+    : 'right',
+)
 let unlistenDownloadProgress: (() => void) | undefined
 const pressedKeys = new Set<number>()
 type ScreenPoint = { x: number; y: number }
@@ -37,6 +47,9 @@ let fpsWindowStartedAt = performance.now()
 let statusDismissTimer: ReturnType<typeof setTimeout> | undefined
 let errorDismissTimer: ReturnType<typeof setTimeout> | undefined
 
+watch(hardwareControlsPosition, (position) => {
+  localStorage.setItem('hardware-controls-position', position)
+}, { flush: 'sync' })
 watch([emulatorStatus, isDownloadingImage], () => {
   if (statusDismissTimer) clearTimeout(statusDismissTimer)
   isStatusDismissed.value = false
@@ -514,23 +527,36 @@ onUnmounted(() => {
               <Ellipsis :size="21" aria-hidden="true" v-if="!showHardwareControls" />
               <EllipsisVertical :size="21" aria-hidden="true" v-else="showHardwareControls" />
             </button>
-            <div v-if="showHardwareControls" id="android-hardware-controls" class="hardware-controls" role="group"
+            <div v-if="showHardwareControls" id="android-hardware-controls" class="hardware-controls"
+              :class="`hardware-controls-${hardwareControlsPosition}`" role="group"
               aria-label="Controles físicos de Android">
-              <button class="hardware-control" type="button" aria-label="Encendido" title="Encendido"
-                @click="pressAndroidKey(26)">
-                <Power :size="19" aria-hidden="true" />
-                <span>Encendido</span>
-              </button>
-              <button class="hardware-control" type="button" aria-label="Subir volumen" title="Subir volumen"
-                @click="pressAndroidKey(24)">
-                <Volume2 :size="19" aria-hidden="true" />
-                <span>Volumen +</span>
-              </button>
-              <button class="hardware-control" type="button" aria-label="Bajar volumen" title="Bajar volumen"
-                @click="pressAndroidKey(25)">
-                <Volume1 :size="19" aria-hidden="true" />
-                <span>Volumen −</span>
-              </button>
+              <label class="hardware-position">
+                <span>Posición</span>
+                <select v-model="hardwareControlsPosition" aria-label="Posición de los botones">
+                  <option value="left">Izquierda</option>
+                  <option value="right">Derecha</option>
+                  <option value="top">Arriba</option>
+                  <option value="bottom">Abajo</option>
+                </select>
+              </label>
+              <div class="hardware-control-buttons"
+                :class="{ 'hardware-control-buttons-horizontal': hardwareControlsPosition === 'top' || hardwareControlsPosition === 'bottom' }">
+                <button class="hardware-control" type="button" aria-label="Encendido" title="Encendido"
+                  @click="pressAndroidKey(26)">
+                  <Power :size="19" aria-hidden="true" />
+                  <span>Encendido</span>
+                </button>
+                <button class="hardware-control" type="button" aria-label="Subir volumen" title="Subir volumen"
+                  @click="pressAndroidKey(24)">
+                  <Volume2 :size="19" aria-hidden="true" />
+                  <span>Volumen +</span>
+                </button>
+                <button class="hardware-control" type="button" aria-label="Bajar volumen" title="Bajar volumen"
+                  @click="pressAndroidKey(25)">
+                  <Volume1 :size="19" aria-hidden="true" />
+                  <span>Volumen −</span>
+                </button>
+              </div>
             </div>
           </div>
         </section>
@@ -741,11 +767,73 @@ h1 {
   position: absolute;
   z-index: 4;
   top: 50%;
-  right: 1rem;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
   transform: translateY(-50%);
+}
+
+.hardware-controls-left {
+  left: 1rem;
+}
+
+.hardware-controls-right {
+  right: 1rem;
+}
+
+.hardware-controls-top,
+.hardware-controls-bottom {
+  left: 50%;
+  align-items: center;
+  transform: translateX(-50%);
+}
+
+.hardware-controls-top {
+  top: 1rem;
+}
+
+.hardware-controls-bottom {
+  top: auto;
+  bottom: 1rem;
+}
+
+.hardware-position {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid rgb(255 255 255 / 22%);
+  border-radius: 0.5rem;
+  background: rgb(12 22 27 / 88%);
+  color: #f1f7f8;
+  font-size: 0.7rem;
+  backdrop-filter: blur(8px);
+}
+
+.hardware-position select {
+  width: auto;
+  height: 1.75rem;
+  margin: 0;
+  padding: 0 1.5rem 0 0.35rem;
+  border: 0;
+  background-color: transparent;
+  color: #f1f7f8;
+  font-size: 0.7rem;
+}
+
+.hardware-position option {
+  background: #0c161b;
+  color: #f1f7f8;
+}
+
+.hardware-control-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.hardware-control-buttons-horizontal {
+  flex-direction: row;
 }
 
 .hardware-toggle {
