@@ -390,7 +390,7 @@ pub async fn shutdown_android_emulator() -> Result<(), String> {
     let output = timeout(
         Duration::from_secs(15),
         Command::new("adb")
-            .args(["-s", "127.0.0.1:5555", "shell", "poweroff"])
+            .args(["-s", "127.0.0.1:5555", "shell", "reboot", "-p"])
             .output(),
     )
     .await
