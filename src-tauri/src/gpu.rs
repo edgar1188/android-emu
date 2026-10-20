@@ -51,7 +51,8 @@ pub fn setup_workarounds() {
         }
     } else {
         #[cfg(debug_assertions)]
-        println!("🚀 Aceleración por hardware habilitada de forma segura.");
+        //println!("🚀 Aceleración por hardware habilitada de forma segura.");
+        println!("Aceleración por hardware habilitada de forma segura.");
     }
 }
 
