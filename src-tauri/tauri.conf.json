@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "emulador-de-android",
+  "productName": "Emulador-de-Android",
   "version": "8.4.0",
   "identifier": "android-emu.app.canaima",
   "build": {
