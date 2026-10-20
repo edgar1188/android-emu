@@ -7,6 +7,7 @@ use serde::Serialize;
 use std::{
     io::Write,
     net::{TcpListener, TcpStream as StdTcpStream},
+    path::Path,
     process::Stdio,
     sync::{
         atomic::{AtomicU32, Ordering},
@@ -564,6 +565,52 @@ pub async fn adb_set_dark_mode(is_dark: bool, state: State<'_, AdbAppState>) -> 
             "No se pudo cambiar el modo de apariencia de Android.".to_string()
         } else {
             details
+        })
+    }
+}
+
+#[tauri::command]
+pub async fn adb_install_apk(path: String, state: State<'_, AdbAppState>) -> Result<(), String> {
+    let apk_path = Path::new(&path);
+    if !apk_path.is_file() {
+        return Err(format!("No se encontró el archivo APK: {path}"));
+    }
+    if !apk_path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("apk"))
+    {
+        return Err("El archivo seleccionado no tiene extensión .apk.".to_string());
+    }
+
+    let session = state.session.lock().await;
+    let serial = session
+        .as_ref()
+        .map(|session| session.serial.clone())
+        .ok_or_else(|| "No hay un dispositivo ADB conectado.".to_string())?;
+    drop(session);
+
+    let output = tokio::time::timeout(
+        Duration::from_secs(180),
+        Command::new("adb")
+            .args(["-s", &serial, "install", "-r"])
+            .arg(apk_path)
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .map_err(|_| "La instalación del APK tardó demasiado.".to_string())?
+    .map_err(|error| format!("No se pudo ejecutar la instalación ADB: {error}"))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let details = if stderr.is_empty() { stdout } else { stderr };
+        Err(if details.is_empty() {
+            format!("ADB no pudo instalar el APK ({}).", output.status)
+        } else {
+            format!("No se pudo instalar el APK: {details}")
         })
     }
 }

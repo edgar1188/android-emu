@@ -32,6 +32,8 @@ const frameError = ref('')
 const emulatorStatus = ref('Iniciando el emulador Android...')
 const emulatorError = ref('')
 const isAndroidConnected = ref(false)
+const isApkDragActive = ref(false)
+const isInstallingApk = ref(false)
 const isStatusDismissed = ref(false)
 const isErrorDismissed = ref(false)
 const isDownloadingImage = ref(false)
@@ -49,6 +51,7 @@ const hardwareControlsPosition = ref<HardwareControlsPosition>(
     : 'right',
 )
 let unlistenDownloadProgress: (() => void) | undefined
+let unlistenDragDrop: (() => void) | undefined
 const pressedKeys = new Set<number>()
 type ScreenPoint = { x: number; y: number }
 let activePointerId: number | null = null
@@ -475,15 +478,71 @@ function onAdbConnected() {
   queueInput('adb_set_dark_mode', { isDark: appStore.isDarkMode })
 }
 
+async function installDroppedApks(paths: string[]) {
+  if (!paths.length) return
+  if (isInstallingApk.value) {
+    emulatorError.value = 'Espera a que termine la instalación actual antes de soltar más APK.'
+    return
+  }
+
+  const apkPaths = paths.filter((path) => /\.apk$/i.test(path))
+  if (apkPaths.length !== paths.length) {
+    emulatorError.value = 'Solo puedes instalar archivos con extensión .apk.'
+    return
+  }
+
+  isInstallingApk.value = true
+  emulatorError.value = ''
+  try {
+    for (let index = 0; index < apkPaths.length; index += 1) {
+      const path = apkPaths[index]
+      const filename = path.split(/[\\/]/).pop() || path
+      emulatorStatus.value = apkPaths.length > 1
+        ? `Instalando ${filename} (${index + 1}/${apkPaths.length})...`
+        : `Instalando ${filename}...`
+      await invoke('adb_install_apk', { path })
+      emulatorStatus.value = apkPaths.length > 1
+        ? `APK instalado: ${filename} (${index + 1}/${apkPaths.length}).`
+        : `APK instalado: ${filename}.`
+    }
+  } catch (error) {
+    emulatorError.value = `No se pudo instalar el APK: ${String(error)}`
+  } finally {
+    isInstallingApk.value = false
+  }
+}
+
+async function listenForApkDrops() {
+  if (!(window as any).__TAURI_INTERNALS__) return
+
+  try {
+    const { getCurrentWindow } = await import('@tauri-apps/api/window')
+    unlistenDragDrop = await getCurrentWindow().onDragDropEvent((event) => {
+      if (event.payload.type === 'enter') {
+        isApkDragActive.value = event.payload.paths.some((path) => /\.apk$/i.test(path))
+      } else if (event.payload.type === 'leave') {
+        isApkDragActive.value = false
+      } else if (event.payload.type === 'drop') {
+        isApkDragActive.value = false
+        void installDroppedApks(event.payload.paths)
+      }
+    })
+  } catch (error) {
+    emulatorError.value = `No se pudo activar la recepción de APK: ${String(error)}`
+  }
+}
+
 onMounted(() => {
   window.addEventListener('blur', releaseInputs)
   emulatorStatus.value = 'Iniciando el emulador y esperando la conexión...'
+  void listenForApkDrops()
   void startAndroidEmulator()
 })
 onUnmounted(() => {
   window.removeEventListener('blur', releaseInputs)
   frameResizeObserver?.disconnect()
   unlistenDownloadProgress?.()
+  unlistenDragDrop?.()
   if (statusDismissTimer) clearTimeout(statusDismissTimer)
   if (errorDismissTimer) clearTimeout(errorDismissTimer)
   releaseInputs()
@@ -625,6 +684,10 @@ onUnmounted(() => {
                 </button>
               </div>
             </div>
+          </div>
+          <div v-if="isApkDragActive" class="apk-drop-overlay" aria-live="polite">
+            <strong>Suelta aquí para instalar el APK</strong>
+            <span>Se instalará en el dispositivo Android conectado.</span>
           </div>
         </section>
 
@@ -798,6 +861,33 @@ h1 {
   border: 0;
   border-radius: 0;
   background: #0b1216;
+}
+
+.apk-drop-overlay {
+  position: absolute;
+  z-index: 8;
+  inset: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 0.65rem;
+  border: 2px dashed #72c5dd;
+  border-radius: 1rem;
+  background: rgb(5 25 34 / 88%);
+  color: #f1f7f8;
+  pointer-events: none;
+  text-align: center;
+  backdrop-filter: blur(5px);
+}
+
+.apk-drop-overlay strong {
+  font-size: 1.15rem;
+}
+
+.apk-drop-overlay span {
+  color: #c5d9df;
+  font-size: 0.9rem;
 }
 
 .panel-heading {
