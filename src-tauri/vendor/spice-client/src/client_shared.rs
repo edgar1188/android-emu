@@ -440,26 +440,16 @@ impl SpiceClientShared {
             main_channel.initialize().await?;
 
             // Get the session_id from main channel
-            let session_id = main_channel.get_session_id();
-            info!("Got session_id from main channel: {:?}", session_id);
-
-            // If session_id is None, the main channel didn't receive SPICE_MSG_MAIN_INIT yet
-            if session_id.is_none() {
-                error!("CRITICAL: Main channel initialization didn't provide session_id!");
-                error!("The server should have sent SPICE_MSG_MAIN_INIT with session_id");
-                return Err(SpiceError::Protocol(
-                    "No session_id received from main channel".to_string(),
-                ));
-            }
+            let connection_id = main_channel.get_session_id().ok_or_else(|| {
+                SpiceError::Protocol("No session_id received from main channel".to_string())
+            })?;
+            info!("Got connection_id from main channel: {}", connection_id);
 
             // Longer delay to ensure server has fully processed main channel initialization
             sleep(Duration::from_millis(500)).await;
 
             let channels = main_channel.get_channels_list().await?;
             info!("Available channels: {:?}", channels);
-
-            // Try different connection_id approaches based on SPICE protocol understanding
-            info!("Attempting to connect secondary channels");
 
             // Wait a bit more to ensure server is ready
             sleep(Duration::from_secs(1)).await;
@@ -468,16 +458,15 @@ impl SpiceClientShared {
                 match channel_type {
                     ChannelType::Display => {
                         info!(
-                            "Connecting to display channel {} with session_id as connection_id",
-                            channel_id
+                            "Connecting to display channel {} with connection_id {}",
+                            channel_id, connection_id
                         );
 
-                        // According to SPICE protocol: non-main channels use session_id as connection_id
                         let display_channel = DisplayChannel::new_with_connection_id(
                             &inner.host,
                             inner.port,
                             channel_id,
-                            session_id,
+                            Some(connection_id),
                         )
                         .await?;
                         inner
@@ -485,22 +474,20 @@ impl SpiceClientShared {
                             .insert(channel_id, Arc::new(Mutex::new(display_channel)));
                         info!(
                             "✓ Connected to display channel {} with connection_id = {}",
-                            channel_id,
-                            session_id.unwrap_or(0)
+                            channel_id, connection_id
                         );
                     }
                     ChannelType::Inputs => {
                         info!(
-                            "Connecting to inputs channel {} with session_id as connection_id",
-                            channel_id
+                            "Connecting to inputs channel {} with connection_id {}",
+                            channel_id, connection_id
                         );
 
-                        // According to SPICE protocol: non-main channels use session_id as connection_id
                         let inputs_channel = InputsChannel::new_with_connection_id(
                             &inner.host,
                             inner.port,
                             channel_id,
-                            session_id,
+                            Some(connection_id),
                         )
                         .await?;
                         let (sender, receiver) = mpsc::channel(64);
@@ -511,22 +498,20 @@ impl SpiceClientShared {
                         inner.inputs_channels.insert(channel_id, sender);
                         info!(
                             "✓ Connected to inputs channel {} with connection_id = {}",
-                            channel_id,
-                            session_id.unwrap_or(0)
+                            channel_id, connection_id
                         );
                     }
                     ChannelType::Cursor => {
                         info!(
-                            "Connecting to cursor channel {} with session_id as connection_id",
-                            channel_id
+                            "Connecting to cursor channel {} with connection_id {}",
+                            channel_id, connection_id
                         );
 
-                        // According to SPICE protocol: non-main channels use session_id as connection_id
                         let cursor_channel = CursorChannel::new_with_connection_id(
                             &inner.host,
                             inner.port,
                             channel_id,
-                            session_id,
+                            Some(connection_id),
                         )
                         .await?;
                         inner
@@ -534,8 +519,7 @@ impl SpiceClientShared {
                             .insert(channel_id, Arc::new(Mutex::new(cursor_channel)));
                         info!(
                             "✓ Connected to cursor channel {} with connection_id = {}",
-                            channel_id,
-                            session_id.unwrap_or(0)
+                            channel_id, connection_id
                         );
                     }
                     _ => {

@@ -160,6 +160,7 @@ pub struct ChannelConnection {
     password: Option<String>,
     connection_id: Option<u32>,
     next_serial: u64,
+    ack_flow: connection::AckFlowControl,
     handshake_complete: bool,
 }
 
@@ -211,6 +212,7 @@ impl ChannelConnection {
             password: None,
             connection_id: None,
             next_serial: 1,
+            ack_flow: connection::AckFlowControl::default(),
             handshake_complete: false,
         })
     }
@@ -352,6 +354,7 @@ impl ChannelConnection {
             password: None,
             connection_id: None,
             next_serial: 1,
+            ack_flow: connection::AckFlowControl::default(),
             handshake_complete: false,
         })
     }
@@ -765,6 +768,10 @@ impl ChannelConnection {
         );
 
         let data = self.read_raw(header.msg_size as usize).await?;
+
+        if let Some((msg_type, response)) = self.ack_flow.response(header.msg_type, &data)? {
+            self.send_message(msg_type, &response).await?;
+        }
 
         Ok((header, data))
     }

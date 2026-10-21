@@ -2,7 +2,9 @@ use crate::channels::{Channel, ChannelConnection};
 use crate::error::{Result, SpiceError};
 use crate::protocol::*;
 use binrw::BinRead;
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
 // Integration tests moved to tests/display_integration.rs
@@ -82,6 +84,7 @@ pub struct DisplayChannel {
     update_callback: Option<Box<dyn Fn(&DisplaySurface) + Send + Sync>>,
     #[cfg(target_arch = "wasm32")]
     update_callback: Option<Box<dyn Fn(&DisplaySurface)>>,
+    last_update_callback: Cell<Option<Instant>>,
     image_cache: ImageCache,
     last_mark: Option<u32>, // Track last received mark for synchronization
 }
@@ -155,6 +158,7 @@ impl DisplayChannel {
             monitors: Vec::new(),
             active_streams: HashMap::new(),
             update_callback: None,
+            last_update_callback: Cell::new(None),
             image_cache: ImageCache::new(),
             last_mark: None,
         })
@@ -231,6 +235,7 @@ impl DisplayChannel {
             monitors: Vec::new(),
             active_streams: HashMap::new(),
             update_callback: None,
+            last_update_callback: Cell::new(None),
             image_cache: ImageCache::new(),
             last_mark: None,
         })
@@ -310,6 +315,7 @@ impl DisplayChannel {
             monitors: Vec::new(),
             active_streams: HashMap::new(),
             update_callback: None,
+            last_update_callback: Cell::new(None),
             image_cache: ImageCache::new(),
             last_mark: None,
         })
@@ -376,8 +382,18 @@ impl DisplayChannel {
     }
 
     fn notify_update(&self, surface_id: u32) {
+        let now = Instant::now();
+        if self
+            .last_update_callback
+            .get()
+            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(33))
+        {
+            return;
+        }
+
         if let Some(ref callback) = self.update_callback {
             if let Some(surface) = self.surfaces.get(&surface_id) {
+                self.last_update_callback.set(Some(now));
                 callback(surface);
             }
         }
@@ -1790,16 +1806,14 @@ impl Channel for DisplayChannel {
             x if x == DisplayChannelMessage::Mark as u16 => {
                 debug!("Received display mark");
 
-                // Parse the mark message
-                let mut cursor = std::io::Cursor::new(data);
-                let mark_msg = SpiceMsgDisplayMark::read(&mut cursor).map_err(|e| {
-                    SpiceError::Protocol(format!("Failed to parse DisplayMark: {e}"))
-                })?;
-
-                info!("Display mark received: {}", mark_msg.mark);
-
-                // Store the mark for synchronization tracking
-                self.last_mark = Some(mark_msg.mark);
+                if data.len() >= std::mem::size_of::<u32>() {
+                    self.last_mark = Some(u32::from_le_bytes([data[0], data[1], data[2], data[3]]));
+                } else if !data.is_empty() {
+                    return Err(SpiceError::Protocol(format!(
+                        "Display mark payload is too short: {} bytes",
+                        data.len()
+                    )));
+                }
 
                 // According to the protocol, we should expose the display content after receiving a mark
                 // Notify any update callbacks about the current surface state
@@ -1951,16 +1965,7 @@ impl Channel for DisplayChannel {
                 }
             }
             3 => {
-                // SPICE_MSG_SET_ACK
-                // Parse the generation number
-                if data.len() >= 4 {
-                    let generation = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-
-                    // Send ACK_SYNC response
-                    let ack_data = generation.to_le_bytes();
-                    self.connection.send_message(1, &ack_data).await?; // SPICE_MSGC_ACK_SYNC
-                    debug!("DisplayChannel: Sent ACK_SYNC for generation {generation}");
-                }
+                debug!("DisplayChannel: ACK flow control handled by channel connection");
             }
             x if x == SPICE_MSG_DISPLAY_COPY_BITS => {
                 debug!("Received DISPLAY_COPY_BITS");

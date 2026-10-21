@@ -337,8 +337,7 @@ impl Channel for MainChannel {
                     return Ok(());
                 }
                 x if x == crate::protocol::SPICE_MSG_SET_ACK => {
-                    debug!("Received SPICE_MSG_SET_ACK");
-                    // TODO: Implement acknowledgment flow control
+                    debug!("Main channel: ACK flow control handled by channel connection");
                     return Ok(());
                 }
                 x if x == crate::protocol::SPICE_MSG_NOTIFY => {

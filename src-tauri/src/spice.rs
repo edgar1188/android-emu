@@ -164,49 +164,49 @@ fn validate_surface(
     Ok(())
 }
 
-fn normalize_surface_pixels(surface: &spice_client::channels::display::DisplaySurface) -> Vec<u8> {
+fn append_normalized_surface_pixels(
+    destination: &mut Vec<u8>,
+    surface: &spice_client::channels::display::DisplaySurface,
+) {
     let pixel_count = (surface.width * surface.height) as usize;
+    let pixel_offset = destination.len();
 
     match surface.format {
         1 | 8 | 32 => {
-            let mut rgba = Vec::with_capacity(pixel_count * 4);
-            for chunk in surface.data.chunks_exact(4) {
-                let [r, g, b, source_alpha] = [chunk[0], chunk[1], chunk[2], chunk[3]];
-                let alpha = if matches!(surface.format, 1 | 32) {
-                    255
-                } else {
-                    source_alpha
-                };
-                rgba.extend_from_slice(&[r, g, b, alpha]);
+            destination.extend_from_slice(&surface.data[..pixel_count * 4]);
+            if matches!(surface.format, 1 | 32) {
+                for alpha in destination[pixel_offset + 3..].iter_mut().step_by(4) {
+                    *alpha = 255;
+                }
             }
-            rgba
         }
         24 => {
-            let mut rgba = Vec::with_capacity(pixel_count * 4);
-            for chunk in surface.data.chunks_exact(3) {
-                let b = chunk[0];
-                let g = chunk[1];
-                let r = chunk[2];
-                rgba.extend_from_slice(&[r, g, b, 255]);
+            for source in surface.data.chunks_exact(3).take(pixel_count) {
+                destination.extend_from_slice(&[source[2], source[1], source[0], 255]);
             }
-            rgba
         }
         16 => {
-            let mut rgba = Vec::with_capacity(pixel_count * 4);
-            for chunk in surface.data.chunks_exact(2) {
-                let word = u16::from_le_bytes([chunk[0], chunk[1]]);
+            for source in surface.data.chunks_exact(2).take(pixel_count) {
+                let word = u16::from_le_bytes([source[0], source[1]]);
                 let r5 = (word >> 11) & 0x1F;
                 let g6 = (word >> 5) & 0x3F;
                 let b5 = word & 0x1F;
                 let r = (((r5 * 255) + 15) / 31) as u8;
                 let g = (((g6 * 255) + 31) / 63) as u8;
                 let b = (((b5 * 255) + 15) / 31) as u8;
-                rgba.extend_from_slice(&[r, g, b, 255]);
+                destination.extend_from_slice(&[r, g, b, 255]);
             }
-            rgba
         }
-        _ => surface.data.clone(),
+        _ => destination.extend_from_slice(&surface.data),
     }
+}
+
+#[cfg(test)]
+fn normalize_surface_pixels(surface: &spice_client::channels::display::DisplaySurface) -> Vec<u8> {
+    let pixel_count = (surface.width * surface.height) as usize;
+    let mut rgba = Vec::with_capacity(pixel_count * 4);
+    append_normalized_surface_pixels(&mut rgba, surface);
+    rgba
 }
 
 #[tauri::command]
@@ -230,7 +230,8 @@ pub async fn spice_connect(
         .await
         .map_err(|error| format!("No se pudo abrir los canales SPICE: {error}"))?;
 
-    let (frame_tx, mut frame_rx) = watch::channel(None);
+    let (frame_tx, mut frame_rx) =
+        watch::channel(None::<spice_client::channels::display::DisplaySurface>);
     let (frame_ack, mut frame_ack_rx) = mpsc::channel::<u32>(1);
     client
         .set_display_update_callback(0, move |surface| {
@@ -247,22 +248,25 @@ pub async fn spice_connect(
                 break;
             }
 
-            let surface = frame_rx.borrow_and_update().clone();
-            let Some(surface) = surface else {
-                continue;
+            let payload = {
+                let snapshot = frame_rx.borrow_and_update();
+                let Some(surface) = snapshot.as_ref() else {
+                    continue;
+                };
+
+                if validate_surface(surface).is_err() {
+                    continue;
+                }
+
+                frame_id = frame_id.wrapping_add(1);
+                let pixel_count = (surface.width * surface.height) as usize;
+                let mut payload = Vec::with_capacity(12 + pixel_count * 4);
+                payload.extend_from_slice(&frame_id.to_le_bytes());
+                payload.extend_from_slice(&surface.width.to_le_bytes());
+                payload.extend_from_slice(&surface.height.to_le_bytes());
+                append_normalized_surface_pixels(&mut payload, surface);
+                payload
             };
-
-            if validate_surface(&surface).is_err() {
-                continue;
-            }
-
-            let rgba_pixels = normalize_surface_pixels(&surface);
-            frame_id = frame_id.wrapping_add(1);
-            let mut payload = Vec::with_capacity(12 + rgba_pixels.len());
-            payload.extend_from_slice(&frame_id.to_le_bytes());
-            payload.extend_from_slice(&surface.width.to_le_bytes());
-            payload.extend_from_slice(&surface.height.to_le_bytes());
-            payload.extend_from_slice(&rgba_pixels);
 
             if on_frame.send(InvokeResponseBody::Raw(payload)).is_err() {
                 break;
@@ -493,6 +497,32 @@ mod tests {
             height: 1,
             format: 1,
             data: vec![0xFF, 0x00, 0x00, 0x00],
+        };
+
+        let pixels = normalize_surface_pixels(&surface);
+        assert_eq!(pixels, vec![255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn converts_spice_bgr24_surface_to_rgba() {
+        let surface = DisplaySurface {
+            width: 1,
+            height: 1,
+            format: 24,
+            data: vec![3, 2, 1],
+        };
+
+        let pixels = normalize_surface_pixels(&surface);
+        assert_eq!(pixels, vec![1, 2, 3, 255]);
+    }
+
+    #[test]
+    fn converts_spice_rgb565_surface_to_rgba() {
+        let surface = DisplaySurface {
+            width: 1,
+            height: 1,
+            format: 16,
+            data: 0xF800_u16.to_le_bytes().to_vec(),
         };
 
         let pixels = normalize_surface_pixels(&surface);

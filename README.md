@@ -7,7 +7,7 @@ La aplicación inicia QEMU automáticamente al abrirse. Busca la imagen en:
 
 La URL se puede sobrescribir con `ANDROID_QCOW2_URL`. Se requieren `curl`, `qemu-system-x86_64`, `adb` y acceso a KVM.
 
-La pantalla se recibe por SPICE en `127.0.0.1:5556`; la interacción y los controles del dispositivo siguen usando ADB/scrcpy. Si se reutiliza una sesión QEMU anterior que no tenga SPICE habilitado, hay que reiniciarla para que exponga ese puerto.
+La pantalla se recibe por SPICE en `127.0.0.1:5556` usando QXL sin aceleración GL; la interacción y los controles del dispositivo siguen usando ADB/scrcpy. Si ya hay una sesión QEMU escuchando en `5555`, la aplicación la reutiliza: hay que cerrarla y reiniciarla para que se apliquen QXL y SPICE sin GL.
 
 Si ya hay una sesión escuchando en `127.0.0.1:5555`, la aplicación la reutiliza sin abrir ni descargar una imagen. Al cerrar la ventana, intenta apagar esa instancia con `adb shell poweroff` antes de cerrar.
 

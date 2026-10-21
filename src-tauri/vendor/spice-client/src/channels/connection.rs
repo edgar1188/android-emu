@@ -11,6 +11,49 @@ use sha1::Sha1;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
+#[derive(Default)]
+pub(super) struct AckFlowControl {
+    window: u32,
+    messages_since_ack: u32,
+}
+
+impl AckFlowControl {
+    pub(super) fn response(
+        &mut self,
+        msg_type: u16,
+        data: &[u8],
+    ) -> Result<Option<(u16, Vec<u8>)>> {
+        if msg_type == SPICE_MSG_SET_ACK {
+            if data.len() < 8 {
+                return Err(SpiceError::Protocol(format!(
+                    "SPICE_MSG_SET_ACK payload is too short: expected 8 bytes, got {}",
+                    data.len()
+                )));
+            }
+
+            let generation = u32::from_le_bytes(data[0..4].try_into().unwrap());
+            self.window = u32::from_le_bytes(data[4..8].try_into().unwrap());
+            self.messages_since_ack = 0;
+            return Ok(Some((
+                SPICE_MSGC_ACK_SYNC,
+                generation.to_le_bytes().to_vec(),
+            )));
+        }
+
+        if self.window == 0 {
+            return Ok(None);
+        }
+
+        self.messages_since_ack += 1;
+        if self.messages_since_ack >= self.window {
+            self.messages_since_ack = 0;
+            return Ok(Some((SPICE_MSGC_ACK, Vec::new())));
+        }
+
+        Ok(None)
+    }
+}
+
 /// A connection to a SPICE channel
 pub struct ChannelConnection {
     transport: Box<dyn Transport>,
@@ -19,6 +62,7 @@ pub struct ChannelConnection {
     password: Option<String>,
     connection_id: Option<u32>,
     next_serial: u64,
+    ack_flow: AckFlowControl,
     handshake_complete: bool,
     server_common_caps: Vec<u32>,
     server_channel_caps: Vec<u32>,
@@ -76,6 +120,7 @@ impl ChannelConnection {
             password: None,
             connection_id: None,
             next_serial: 1,
+            ack_flow: AckFlowControl::default(),
             handshake_complete: false,
             server_common_caps: Vec::new(),
             server_channel_caps: Vec::new(),
@@ -116,6 +161,7 @@ impl ChannelConnection {
             password: None,
             connection_id: None,
             next_serial: 1,
+            ack_flow: AckFlowControl::default(),
             handshake_complete: false,
             server_common_caps: Vec::new(),
             server_channel_caps: Vec::new(),
@@ -487,7 +533,11 @@ impl ChannelConnection {
     }
 
     pub async fn read_message(&mut self) -> Result<(SpiceDataHeader, Vec<u8>)> {
-        read_message(&mut self.transport).await
+        let (header, data) = read_message(&mut self.transport).await?;
+        if let Some((msg_type, ack_data)) = self.ack_flow.response(header.msg_type, &data)? {
+            self.send_message(msg_type, &ack_data).await?;
+        }
+        Ok((header, data))
     }
 
     pub async fn read_message_with_timeout(
@@ -497,5 +547,43 @@ impl ChannelConnection {
         // For now, just call read_message
         // TODO: Implement actual timeout logic
         self.read_message().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AckFlowControl;
+    use crate::protocol::{SPICE_MSGC_ACK, SPICE_MSGC_ACK_SYNC, SPICE_MSG_SET_ACK};
+
+    fn set_ack_payload(generation: u32, window: u32) -> [u8; 8] {
+        let mut payload = [0; 8];
+        payload[..4].copy_from_slice(&generation.to_le_bytes());
+        payload[4..].copy_from_slice(&window.to_le_bytes());
+        payload
+    }
+
+    #[test]
+    fn ack_flow_sends_sync_then_ack_at_window() {
+        let mut flow = AckFlowControl::default();
+
+        let response = flow
+            .response(SPICE_MSG_SET_ACK, &set_ack_payload(7, 2))
+            .unwrap();
+        assert_eq!(
+            response,
+            Some((SPICE_MSGC_ACK_SYNC, 7u32.to_le_bytes().to_vec()))
+        );
+        assert_eq!(flow.response(101, &[]).unwrap(), None);
+        assert_eq!(
+            flow.response(102, &[]).unwrap(),
+            Some((SPICE_MSGC_ACK, Vec::new()))
+        );
+    }
+
+    #[test]
+    fn ack_flow_rejects_truncated_set_ack() {
+        let mut flow = AckFlowControl::default();
+
+        assert!(flow.response(SPICE_MSG_SET_ACK, &[0; 4]).is_err());
     }
 }

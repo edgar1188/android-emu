@@ -378,16 +378,7 @@ impl Channel for InputsChannel {
                 self.handle_modifiers_message(data).await?;
             }
             x if x == SPICE_MSG_SET_ACK => {
-                debug!("Received SET_ACK message in inputs channel");
-                if data.len() >= 4 {
-                    let generation = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                    debug!("Inputs channel: SET_ACK generation: {}", generation);
-                    // Send ACK_SYNC response
-                    let ack_data = generation.to_le_bytes();
-                    self.connection
-                        .send_message(SPICE_MSGC_ACK_SYNC, &ack_data)
-                        .await?;
-                }
+                debug!("Inputs channel: ACK flow control handled by channel connection");
             }
             x if x == SPICE_MSG_PING => {
                 debug!("Received PING message in inputs channel");

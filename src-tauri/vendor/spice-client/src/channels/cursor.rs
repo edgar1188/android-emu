@@ -274,19 +274,7 @@ impl Channel for CursorChannel {
     async fn handle_message(&mut self, header: &SpiceDataHeader, data: &[u8]) -> Result<()> {
         match header.msg_type {
             SPICE_MSG_SET_ACK => {
-                debug!("Received SET_ACK message");
-                // Parse the generation number
-                if data.len() >= 4 {
-                    let generation = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
-                    debug!("Cursor channel: SET_ACK generation: {}", generation);
-
-                    // Send ACK_SYNC response
-                    let ack_data = generation.to_le_bytes();
-                    self.connection
-                        .send_message(SPICE_MSGC_ACK_SYNC, &ack_data)
-                        .await?;
-                    debug!("Cursor channel: Sent ACK_SYNC response");
-                }
+                debug!("Cursor channel: ACK flow control handled by channel connection");
             }
             SPICE_MSG_CURSOR_INIT => {
                 debug!("Received cursor init");
