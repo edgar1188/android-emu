@@ -21,6 +21,7 @@ import {
   X,
 } from '@lucide/vue'
 import AdbConnection from '../components/AdbConnection.vue'
+import SpiceConnection from '../components/SpiceConnection.vue'
 import { useAppStore } from '../stores/useAppStore'
 
 const appStore = useAppStore()
@@ -29,6 +30,8 @@ const displayFrame = ref<HTMLDivElement | null>(null)
 const displayCanvas = ref<HTMLCanvasElement | null>(null)
 const inputError = ref('')
 const frameError = ref('')
+const videoStatus = ref('Esperando conexión ADB...')
+const hasReceivedVideoFrame = ref(false)
 const emulatorStatus = ref('Iniciando el emulador Android...')
 const emulatorError = ref('')
 const isAndroidConnected = ref(false)
@@ -65,6 +68,7 @@ let reusableFrame: ImageData | undefined
 let sourceFrameCanvas: HTMLCanvasElement | undefined
 let sourceFrameContext: CanvasRenderingContext2D | null = null
 let frameResizeObserver: ResizeObserver | undefined
+let frameTimeoutTimer: ReturnType<typeof setTimeout> | undefined
 let fpsWindowFrames = 0
 let fpsWindowStartedAt = performance.now()
 let statusDismissTimer: ReturnType<typeof setTimeout> | undefined
@@ -478,6 +482,46 @@ function onAdbConnected() {
   queueInput('adb_set_dark_mode', { isDark: appStore.isDarkMode })
 }
 
+function onSpiceConnected() {
+  hasReceivedVideoFrame.value = false
+  videoStatus.value = 'SPICE conectado; esperando el primer frame...'
+  if (frameTimeoutTimer) clearTimeout(frameTimeoutTimer)
+  frameTimeoutTimer = setTimeout(() => {
+    if (!hasReceivedVideoFrame.value) {
+      frameError.value = 'SPICE conectó, pero no llegaron frames. Verifica que QEMU use una pantalla QXL compatible y que SPICE esté habilitado.'
+    }
+  }, 10000)
+}
+
+async function updateSpiceFrame(rawFrame: ArrayBuffer | Uint8Array) {
+  const buffer = rawFrame instanceof ArrayBuffer
+    ? rawFrame
+    : rawFrame.buffer.slice(rawFrame.byteOffset, rawFrame.byteOffset + rawFrame.byteLength)
+  if (buffer.byteLength < 12) {
+    frameError.value = 'El frame SPICE recibido está incompleto.'
+    return
+  }
+  const frameId = new DataView(buffer).getUint32(0, true)
+  try {
+    frameError.value = ''
+    await updateFrame(buffer)
+    if (!frameError.value) {
+      hasReceivedVideoFrame.value = true
+      videoStatus.value = 'Vídeo SPICE en vivo.'
+      if (frameTimeoutTimer) clearTimeout(frameTimeoutTimer)
+      frameTimeoutTimer = undefined
+    }
+  } catch (error) {
+    frameError.value = `No se pudo procesar el frame SPICE: ${String(error)}`
+  } finally {
+    try {
+      await invoke('spice_frame_ack', { frameId })
+    } catch (error) {
+      frameError.value = `No se pudo confirmar el frame SPICE: ${String(error)}`
+    }
+  }
+}
+
 async function installDroppedApks(paths: string[]) {
   if (!paths.length) return
   if (isInstallingApk.value) {
@@ -545,6 +589,7 @@ onUnmounted(() => {
   unlistenDragDrop?.()
   if (statusDismissTimer) clearTimeout(statusDismissTimer)
   if (errorDismissTimer) clearTimeout(errorDismissTimer)
+  if (frameTimeoutTimer) clearTimeout(frameTimeoutTimer)
   releaseInputs()
 })
 </script>
@@ -586,8 +631,8 @@ onUnmounted(() => {
 
           <div v-if="!frameSize.width" class="display-placeholder">
             <Activity :size="34" />
-            <strong>Esperando conexión</strong>
-            <span>La aplicación se conectará automáticamente cuando Android termine de iniciar.</span>
+            <strong>{{ frameError ? 'No se pudo mostrar la pantalla' : 'Esperando pantalla SPICE' }}</strong>
+            <span>{{ frameError || videoStatus }}</span>
           </div>
           <div v-else class="display-shell">
             <div ref="displayFrame" class="display-frame" tabindex="0" aria-label="Pantalla interactiva de Android"
@@ -692,7 +737,10 @@ onUnmounted(() => {
         </section>
 
         <aside class="control-column" style="display:none">
-          <AdbConnection @frame="updateFrame" @connected="onAdbConnected" />
+          <AdbConnection @connected="onAdbConnected" />
+          <SpiceConnection v-if="isAndroidConnected" @frame="updateSpiceFrame"
+            @connected="onSpiceConnected"
+            @error="(message) => { videoStatus = 'Falló la conexión SPICE.'; frameError = `Conexión SPICE: ${message}` }" />
         </aside>
       </div>
     </main>

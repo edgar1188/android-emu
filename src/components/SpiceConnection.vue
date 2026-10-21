@@ -20,6 +20,8 @@ let isUnmounted = false
 let activeFrameChannel: Channel<ArrayBuffer> | undefined
 const emit = defineEmits<{
     frame: [frame: ArrayBuffer]
+    error: [message: string]
+    connected: []
 }>()
 async function connectVideo() {
     if (isConnecting.value || isUnmounted) return
@@ -31,7 +33,9 @@ async function connectVideo() {
 
     try {
         const frameChannel = new Channel<ArrayBuffer>()
-        frameChannel.onmessage = (frame) => emit('frame', frame)
+        frameChannel.onmessage = (frame) => {
+            emit('frame', frame)
+        }
         activeFrameChannel = frameChannel
         await invoke('spice_connect', { endpoint: endpoint.value.trim(), onFrame: frameChannel })
         result.value = {
@@ -41,9 +45,12 @@ async function connectVideo() {
             messageSize: 0,
         }
         retryAttempt = 0
+        errorMessage.value = ''
+        emit('connected')
     } catch (error) {
         activeFrameChannel = undefined
         errorMessage.value = String(error)
+        emit('error', errorMessage.value)
         if (!isUnmounted && retryAttempt < 4) {
             retryAttempt += 1
             retryTimer = setTimeout(() => {
@@ -85,7 +92,7 @@ onUnmounted(() => {
         <form @submit.prevent="connectVideo">
             <label for="spice-endpoint">Endpoint SPICE</label>
             <input id="spice-endpoint" v-model="endpoint" class="input-canaima" type="text" required autocomplete="off"
-                placeholder="127.0.0.1:5556 o unix:/tmp/android.spice" />
+                placeholder="127.0.0.1:5556" />
             <button class="btn-canaima" type="submit" :disabled="isConnecting">
                 <RefreshCw v-if="isConnecting" :size="18" class="spin-anim" aria-hidden="true" />
                 <Wifi v-else :size="18" aria-hidden="true" />

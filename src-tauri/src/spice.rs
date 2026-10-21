@@ -9,15 +9,25 @@ use tauri::{
     ipc::{Channel, InvokeResponseBody},
     State,
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Mutex};
 use tokio::task::JoinHandle;
-
-use crate::SpiceAppState;
 
 pub struct SpiceSession {
     client: SpiceClientShared,
     frame_task: JoinHandle<()>,
     frame_ack: mpsc::Sender<u32>,
+}
+
+pub struct SpiceAppState {
+    session: Mutex<Option<SpiceSession>>,
+}
+
+impl SpiceAppState {
+    pub fn new() -> Self {
+        Self {
+            session: Mutex::new(None),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]

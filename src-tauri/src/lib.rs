@@ -1,5 +1,6 @@
 mod adb;
 mod emulator;
+mod spice;
 mod titlebar;
 
 use std::sync::{
@@ -21,6 +22,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(adb::AdbAppState::new())
         .manage(emulator::EmulatorAppState::new())
+        .manage(spice::SpiceAppState::new())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             use tauri::Manager;
@@ -75,6 +77,9 @@ pub fn run() {
             adb::scrcpy_input_key,
             adb::scrcpy_input_touch,
             adb::scrcpy_input_scroll,
+            spice::spice_connect,
+            spice::spice_disconnect,
+            spice::spice_frame_ack,
             emulator::start_android_emulator,
             titlebar::sync_theme
         ])
