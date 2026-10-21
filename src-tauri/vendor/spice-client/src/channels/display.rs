@@ -75,6 +75,155 @@ pub struct StreamInfo {
     pub dest_rect: SpiceRect,
 }
 
+fn copy_image_to_surface(
+    surface: &mut DisplaySurface,
+    image_data: &[u8],
+    image_width: u32,
+    image_height: u32,
+    source: SpiceRect,
+    destination: SpiceRect,
+    clips: Option<&[SpiceRect]>,
+    blend: bool,
+) {
+    let source_left = i64::from(source.left);
+    let source_top = i64::from(source.top);
+    let source_width = (i64::from(source.right) - source_left).max(0);
+    let source_height = (i64::from(source.bottom) - source_top).max(0);
+    let destination_left = i64::from(destination.left);
+    let destination_top = i64::from(destination.top);
+    let destination_width = (i64::from(destination.right) - destination_left).max(0);
+    let destination_height = (i64::from(destination.bottom) - destination_top).max(0);
+    if source_width == 0
+        || source_height == 0
+        || destination_width == 0
+        || destination_height == 0
+    {
+        return;
+    }
+
+    let left = destination.left.max(0).min(surface.width as i32);
+    let top = destination.top.max(0).min(surface.height as i32);
+    let right = destination.right.max(0).min(surface.width as i32);
+    let bottom = destination.bottom.max(0).min(surface.height as i32);
+    if left >= right || top >= bottom {
+        return;
+    }
+
+    let bpp = 4_usize;
+    let surface_stride = surface.width as usize * bpp;
+
+    for y in top..bottom {
+        let relative_y = i64::from(y) - destination_top;
+        let source_y = source_top + relative_y * source_height / destination_height;
+        if source_y < 0 || source_y >= i64::from(image_height) {
+            continue;
+        }
+
+        for x in left..right {
+            if !inside_clip(clips, x, y) {
+                continue;
+            }
+
+            let relative_x = i64::from(x) - destination_left;
+            let source_x = source_left + relative_x * source_width / destination_width;
+            if source_x < 0 || source_x >= i64::from(image_width) {
+                continue;
+            }
+
+            let source_offset =
+                (source_y as usize * image_width as usize + source_x as usize) * bpp;
+            let destination_offset = y as usize * surface_stride + x as usize * bpp;
+            if source_offset + bpp <= image_data.len()
+                && destination_offset + bpp <= surface.data.len()
+            {
+                let source_pixel = &image_data[source_offset..source_offset + bpp];
+                let destination_pixel =
+                    &mut surface.data[destination_offset..destination_offset + bpp];
+                if blend {
+                    let source_alpha = u32::from(source_pixel[3]);
+                    let destination_alpha = u32::from(destination_pixel[3]);
+                    let output_alpha =
+                        source_alpha + (destination_alpha * (255 - source_alpha) + 127) / 255;
+
+                    for channel in 0..3 {
+                        let source_component =
+                            u32::from(source_pixel[channel]) * source_alpha * 255;
+                        let destination_component = u32::from(destination_pixel[channel])
+                            * destination_alpha
+                            * (255 - source_alpha);
+                        destination_pixel[channel] = if output_alpha == 0 {
+                            0
+                        } else {
+                            ((source_component + destination_component
+                                + output_alpha * 127)
+                                / (output_alpha * 255)) as u8
+                        };
+                    }
+                    destination_pixel[3] = output_alpha as u8;
+                } else {
+                    destination_pixel.copy_from_slice(source_pixel);
+                }
+            }
+        }
+    }
+}
+
+fn inside_clip(clips: Option<&[SpiceRect]>, x: i32, y: i32) -> bool {
+    clips.map_or(true, |rects| {
+        rects
+            .iter()
+            .any(|rect| x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom)
+    })
+}
+
+fn parse_clip_rects(clip: &SpiceClip, data: &[u8]) -> Result<Option<Vec<SpiceRect>>> {
+    match clip.clip_type {
+        value if value == ClipType::None as u8 => Ok(None),
+        value if value == ClipType::Rects as u8 => {
+            let offset = if clip.data > u32::MAX as u64 {
+                (clip.data & u32::MAX as u64) as usize
+            } else {
+                clip.data as usize
+            };
+            let header_end = offset.checked_add(4).ok_or_else(|| {
+                SpiceError::Protocol("SPICE clip rectangle offset overflowed".to_string())
+            })?;
+            if header_end > data.len() {
+                return Err(SpiceError::Protocol(
+                    "SPICE clip rectangle list is outside the drawing message".to_string(),
+                ));
+            }
+
+            let count = u32::from_le_bytes(data[offset..header_end].try_into().unwrap()) as usize;
+            let rect_bytes = count.checked_mul(16).ok_or_else(|| {
+                SpiceError::Protocol("SPICE clip rectangle count overflowed".to_string())
+            })?;
+            let end = header_end.checked_add(rect_bytes).ok_or_else(|| {
+                SpiceError::Protocol("SPICE clip rectangle list size overflowed".to_string())
+            })?;
+            if end > data.len() {
+                return Err(SpiceError::Protocol(format!(
+                    "SPICE clip rectangle list is truncated: expected {rect_bytes} rectangle bytes"
+                )));
+            }
+
+            let rects = data[header_end..end]
+                .chunks_exact(16)
+                .map(|bytes| SpiceRect {
+                    top: i32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+                    left: i32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+                    bottom: i32::from_le_bytes(bytes[8..12].try_into().unwrap()),
+                    right: i32::from_le_bytes(bytes[12..16].try_into().unwrap()),
+                })
+                .collect();
+            Ok(Some(rects))
+        }
+        value => Err(SpiceError::Protocol(format!(
+            "Unsupported SPICE clip type {value}"
+        ))),
+    }
+}
+
 pub struct DisplayChannel {
     pub(crate) connection: ChannelConnection,
     surfaces: HashMap<u32, DisplaySurface>,
@@ -382,11 +531,20 @@ impl DisplayChannel {
     }
 
     fn notify_update(&self, surface_id: u32) {
+        self.notify_update_inner(surface_id, false);
+    }
+
+    fn notify_update_force(&self, surface_id: u32) {
+        self.notify_update_inner(surface_id, true);
+    }
+
+    fn notify_update_inner(&self, surface_id: u32, force: bool) {
         let now = Instant::now();
-        if self
-            .last_update_callback
-            .get()
-            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(33))
+        if !force
+            && self
+                .last_update_callback
+                .get()
+                .is_some_and(|last| now.duration_since(last) < Duration::from_millis(33))
         {
             return;
         }
@@ -906,31 +1064,47 @@ impl DisplayChannel {
             x if x == DisplayChannelMessage::DrawFill as u16 => {
                 debug!("Handle draw fill");
 
-                // For now, just log that we received a DrawFill
-                // TODO: Implement proper parsing once SpiceDrawFill has binrw support
-                info!("Received DrawFill message ({} bytes)", data.len());
+                let mut cursor = std::io::Cursor::new(data);
+                if let Ok(draw_fill) = SpiceDrawFill::read(&mut cursor) {
+                    let clips = parse_clip_rects(&draw_fill.base.clip, data)?;
+                    if draw_fill.data.brush.brush_type == BrushType::Solid as u8 {
+                        let color = draw_fill.data.brush.color;
+                        let rgba = [
+                            ((color >> 16) & 0xff) as u8,
+                            ((color >> 8) & 0xff) as u8,
+                            (color & 0xff) as u8,
+                            255,
+                        ];
+                        let bbox = draw_fill.base.box_;
+                        if let Some(surface) = self.surfaces.get_mut(&draw_fill.base.surface_id) {
+                            let left = bbox.left.max(0).min(surface.width as i32);
+                            let top = bbox.top.max(0).min(surface.height as i32);
+                            let right = bbox.right.max(0).min(surface.width as i32);
+                            let bottom = bbox.bottom.max(0).min(surface.height as i32);
+                            let stride = surface.width as usize * 4;
 
-                // Basic implementation: fill primary surface with a test color
-                if let Some(surface) = self.surfaces.get_mut(&0) {
-                    // Fill with a test pattern to show something is happening
-                    let bytes_per_pixel = 4;
-                    let stride = surface.width as usize * bytes_per_pixel;
+                            for y in top..bottom {
+                                for x in left..right {
+                                    if !inside_clip(clips.as_deref(), x, y) {
+                                        continue;
+                                    }
 
-                    // Fill top 100 pixels with red to show we're receiving draw commands
-                    for y in 0..100.min(surface.height as usize) {
-                        for x in 0..surface.width as usize {
-                            let offset = y * stride + x * bytes_per_pixel;
-                            if offset + 4 <= surface.data.len() {
-                                surface.data[offset] = 255; // R
-                                surface.data[offset + 1] = 0; // G
-                                surface.data[offset + 2] = 0; // B
-                                surface.data[offset + 3] = 255; // A
+                                    let offset = y as usize * stride + x as usize * 4;
+                                    if offset + 4 <= surface.data.len() {
+                                        surface.data[offset..offset + 4].copy_from_slice(&rgba);
+                                    }
+                                }
                             }
+                            self.notify_update(draw_fill.base.surface_id);
                         }
+                    } else {
+                        warn!(
+                            "Unsupported DrawFill brush type {}",
+                            draw_fill.data.brush.brush_type
+                        );
                     }
-
-                    // Notify that the surface was updated
-                    self.notify_update(0);
+                } else {
+                    warn!("Failed to parse DrawFill message");
                 }
             }
             x if x == DisplayChannelMessage::DrawCopy as u16 => {
@@ -942,6 +1116,7 @@ impl DisplayChannel {
                     let surface_id = draw_copy.base.surface_id;
                     let bbox = &draw_copy.base.box_;
                     let src_area = &draw_copy.data.src_area;
+                    let clips = parse_clip_rects(&draw_copy.base.clip, data)?;
 
                     debug!("DrawCopy on surface {} - rect: ({},{}) to ({},{}) from src rect ({},{}) to ({},{}) src_image: 0x{:x}",
                           surface_id, bbox.left, bbox.top, bbox.right, bbox.bottom,
@@ -965,12 +1140,6 @@ impl DisplayChannel {
                             Some((image_data, img_width, img_height)) => {
                                 info!("Decoded image: {}x{}", img_width, img_height);
 
-                                // Copy the decoded image to the surface
-                                let bytes_per_pixel = 4;
-                                let surface_stride = surface.width as usize * bytes_per_pixel;
-                                let image_stride = img_width as usize * bytes_per_pixel;
-
-                                // Calculate source rectangle bounds
                                 let source_area = if src_area.left == src_area.right
                                     || src_area.top == src_area.bottom
                                 {
@@ -983,70 +1152,16 @@ impl DisplayChannel {
                                 } else {
                                     *src_area
                                 };
-                                let src_left =
-                                    source_area.left.min(source_area.right).max(0) as usize;
-                                let src_top =
-                                    source_area.top.min(source_area.bottom).max(0) as usize;
-                                let src_right = source_area
-                                    .left
-                                    .max(source_area.right)
-                                    .min(img_width as i32)
-                                    as usize;
-                                let src_bottom = source_area
-                                    .top
-                                    .max(source_area.bottom)
-                                    .min(img_height as i32)
-                                    as usize;
-
-                                // Calculate destination bounds
-                                let dst_left = bbox.left.max(0) as usize;
-                                let dst_top = bbox.top.max(0) as usize;
-                                let dst_right = bbox.right.min(surface.width as i32) as usize;
-                                let dst_bottom = bbox.bottom.min(surface.height as i32) as usize;
-
-                                // Copy pixels from source to destination
-                                let copy_width = src_right
-                                    .saturating_sub(src_left)
-                                    .min(dst_right.saturating_sub(dst_left));
-                                let copy_height = src_bottom
-                                    .saturating_sub(src_top)
-                                    .min(dst_bottom.saturating_sub(dst_top));
-
-                                for y in 0..copy_height {
-                                    let src_y = src_top + y;
-                                    let dst_y = dst_top + y;
-
-                                    if src_y < img_height as usize
-                                        && dst_y < surface.height as usize
-                                    {
-                                        let src_row_offset = src_y * image_stride;
-                                        let dst_row_offset = dst_y * surface_stride;
-
-                                        for x in 0..copy_width {
-                                            let src_x = src_left + x;
-                                            let dst_x = dst_left + x;
-
-                                            if src_x < img_width as usize
-                                                && dst_x < surface.width as usize
-                                            {
-                                                let src_offset =
-                                                    src_row_offset + src_x * bytes_per_pixel;
-                                                let dst_offset =
-                                                    dst_row_offset + dst_x * bytes_per_pixel;
-
-                                                if src_offset + 4 <= image_data.len()
-                                                    && dst_offset + 4 <= surface.data.len()
-                                                {
-                                                    // Copy RGBA pixels
-                                                    surface.data[dst_offset..dst_offset + 4]
-                                                        .copy_from_slice(
-                                                            &image_data[src_offset..src_offset + 4],
-                                                        );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                copy_image_to_surface(
+                                    surface,
+                                    &image_data,
+                                    img_width,
+                                    img_height,
+                                    source_area,
+                                    *bbox,
+                                    clips.as_deref(),
+                                    false,
+                                );
 
                                 self.notify_update(surface_id);
                             }
@@ -1072,6 +1187,7 @@ impl DisplayChannel {
                     let bbox = &draw_opaque.base.box_;
                     let brush = &draw_opaque.data.brush;
                     let src_area = &draw_opaque.data.src_area;
+                    let clips = parse_clip_rects(&draw_opaque.base.clip, data)?;
 
                     info!("DrawOpaque on surface {} - rect: ({},{}) to ({},{}) brush type: {} src_image: 0x{:x}", 
                           surface_id, bbox.left, bbox.top, bbox.right, bbox.bottom,
@@ -1097,10 +1213,11 @@ impl DisplayChannel {
 
                             // Fill the destination rectangle with brush color
                             for y in bbox.top.max(0)..bbox.bottom.min(surface.height as i32) {
-                                let y = y as usize;
                                 for x in bbox.left.max(0)..bbox.right.min(surface.width as i32) {
-                                    let x = x as usize;
-                                    let offset = y * stride + x * bytes_per_pixel;
+                                    if !inside_clip(clips.as_deref(), x, y) {
+                                        continue;
+                                    }
+                                    let offset = y as usize * stride + x as usize * bytes_per_pixel;
                                     if offset + 4 <= surface.data.len() {
                                         surface.data[offset] = r;
                                         surface.data[offset + 1] = g;
@@ -1115,76 +1232,33 @@ impl DisplayChannel {
                         if let Some((image_data, img_width, img_height)) = decoded_image {
                             info!("Decoded opaque source image: {}x{}", img_width, img_height);
 
-                            // Copy the decoded image to the surface
-                            let image_stride = img_width as usize * bytes_per_pixel;
-
-                            // Calculate source rectangle bounds
-                            let src_left = src_area.left.max(0) as usize;
-                            let src_top = src_area.top.max(0) as usize;
-                            let src_right = src_area.right.min(img_width as i32) as usize;
-                            let src_bottom = src_area.bottom.min(img_height as i32) as usize;
-
-                            // Calculate destination bounds
-                            let dst_left = bbox.left.max(0) as usize;
-                            let dst_top = bbox.top.max(0) as usize;
-                            let dst_right = bbox.right.min(surface.width as i32) as usize;
-                            let dst_bottom = bbox.bottom.min(surface.height as i32) as usize;
-
-                            // Copy pixels from source to destination
-                            let copy_width = (src_right - src_left).min(dst_right - dst_left);
-                            let copy_height = (src_bottom - src_top).min(dst_bottom - dst_top);
-
-                            for y in 0..copy_height {
-                                let src_y = src_top + y;
-                                let dst_y = dst_top + y;
-
-                                if src_y < img_height as usize && dst_y < surface.height as usize {
-                                    let src_row_offset = src_y * image_stride;
-                                    let dst_row_offset = dst_y * stride;
-
-                                    for x in 0..copy_width {
-                                        let src_x = src_left + x;
-                                        let dst_x = dst_left + x;
-
-                                        if src_x < img_width as usize
-                                            && dst_x < surface.width as usize
-                                        {
-                                            let src_offset =
-                                                src_row_offset + src_x * bytes_per_pixel;
-                                            let dst_offset =
-                                                dst_row_offset + dst_x * bytes_per_pixel;
-
-                                            if src_offset + 4 <= image_data.len()
-                                                && dst_offset + 4 <= surface.data.len()
-                                            {
-                                                // Copy RGBA pixels (opaque means we ignore alpha from source)
-                                                surface.data[dst_offset] = image_data[src_offset];
-                                                surface.data[dst_offset + 1] =
-                                                    image_data[src_offset + 1];
-                                                surface.data[dst_offset + 2] =
-                                                    image_data[src_offset + 2];
-                                                surface.data[dst_offset + 3] = 255;
-                                                // Always opaque
-                                            }
-                                        }
-                                    }
+                            let source_area = if src_area.left == src_area.right
+                                || src_area.top == src_area.bottom
+                            {
+                                SpiceRect {
+                                    left: 0,
+                                    top: 0,
+                                    right: img_width as i32,
+                                    bottom: img_height as i32,
                                 }
-                            }
+                            } else {
+                                *src_area
+                            };
+                            copy_image_to_surface(
+                                surface,
+                                &image_data,
+                                img_width,
+                                img_height,
+                                source_area,
+                                *bbox,
+                                clips.as_deref(),
+                                false,
+                            );
                         } else if brush.brush_type != 1 {
-                            // No image and no solid brush, use green test pattern
-                            for y in bbox.top.max(0)..bbox.bottom.min(surface.height as i32) {
-                                let y = y as usize;
-                                for x in bbox.left.max(0)..bbox.right.min(surface.width as i32) {
-                                    let x = x as usize;
-                                    let offset = y * stride + x * bytes_per_pixel;
-                                    if offset + 4 <= surface.data.len() {
-                                        surface.data[offset] = 0;
-                                        surface.data[offset + 1] = 255;
-                                        surface.data[offset + 2] = 0;
-                                        surface.data[offset + 3] = 255;
-                                    }
-                                }
-                            }
+                            warn!(
+                                "Unsupported DrawOpaque brush type {} without source image",
+                                brush.brush_type
+                            );
                         }
 
                         self.notify_update(surface_id);
@@ -1200,34 +1274,44 @@ impl DisplayChannel {
                 let mut cursor = std::io::Cursor::new(data);
                 if let Ok(draw_blend) = SpiceDrawBlend::read(&mut cursor) {
                     let surface_id = draw_blend.base.surface_id;
-                    let bbox = &draw_blend.base.box_;
+                    let bbox = draw_blend.base.box_;
+                    let clips = parse_clip_rects(&draw_blend.base.clip, data)?;
 
                     info!(
                         "DrawBlend on surface {} - rect: ({},{}) to ({},{})",
                         surface_id, bbox.left, bbox.top, bbox.right, bbox.bottom
                     );
 
-                    // For now, just fill with purple to show we're processing DrawBlend
-                    if let Some(surface) = self.surfaces.get_mut(&surface_id) {
-                        let bytes_per_pixel = 4;
-                        let stride = surface.width as usize * bytes_per_pixel;
-
-                        // Fill with purple for testing
-                        for y in bbox.top.max(0)..bbox.bottom.min(surface.height as i32) {
-                            let y = y as usize;
-                            for x in bbox.left.max(0)..bbox.right.min(surface.width as i32) {
-                                let x = x as usize;
-                                let offset = y * stride + x * bytes_per_pixel;
-                                if offset + 4 <= surface.data.len() {
-                                    surface.data[offset] = 128; // R
-                                    surface.data[offset + 1] = 0; // G
-                                    surface.data[offset + 2] = 128; // B
-                                    surface.data[offset + 3] = 255; // A
-                                }
+                    let source_area = draw_blend.data.src_area;
+                    let decoded_image = self.decode_image(draw_blend.data.src_image, data)?;
+                    if let (Some((image_data, img_width, img_height)), Some(surface)) =
+                        (decoded_image, self.surfaces.get_mut(&surface_id))
+                    {
+                        let source_area = if source_area.left == source_area.right
+                            || source_area.top == source_area.bottom
+                        {
+                            SpiceRect {
+                                left: 0,
+                                top: 0,
+                                right: img_width as i32,
+                                bottom: img_height as i32,
                             }
-                        }
-
+                        } else {
+                            source_area
+                        };
+                        copy_image_to_surface(
+                            surface,
+                            &image_data,
+                            img_width,
+                            img_height,
+                            source_area,
+                            bbox,
+                            clips.as_deref(),
+                            true,
+                        );
                         self.notify_update(surface_id);
+                    } else {
+                        warn!("Unable to decode DrawBlend source image");
                     }
                 } else {
                     warn!("Failed to parse DrawBlend message");
@@ -1817,8 +1901,8 @@ impl Channel for DisplayChannel {
 
                 // According to the protocol, we should expose the display content after receiving a mark
                 // Notify any update callbacks about the current surface state
-                if let Some(surface_id) = self.surfaces.keys().next() {
-                    self.notify_update(*surface_id);
+                if self.surfaces.contains_key(&0) {
+                    self.notify_update_force(0);
                 }
 
                 // The MARK message itself doesn't require a specific acknowledgment response
@@ -2167,12 +2251,130 @@ mod tests {
     }
 
     #[test]
+    fn parses_spice_clip_rect_list() {
+        let rect = SpiceRect {
+            left: 2,
+            top: 3,
+            right: 12,
+            bottom: 13,
+        };
+        let mut data = vec![0; 24];
+        data[..4].copy_from_slice(&1_u32.to_le_bytes());
+        for (offset, value) in [
+            (4, rect.top),
+            (8, rect.left),
+            (12, rect.bottom),
+            (16, rect.right),
+        ] {
+            data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+
+        let parsed_rects = parse_clip_rects(
+            &SpiceClip {
+                clip_type: ClipType::Rects as u8,
+                data: 0,
+            },
+            &data,
+        )
+        .unwrap()
+        .unwrap()[0];
+        assert_eq!(parsed_rects.left, rect.left);
+        assert_eq!(parsed_rects.top, rect.top);
+        assert_eq!(parsed_rects.right, rect.right);
+        assert_eq!(parsed_rects.bottom, rect.bottom);
+    }
+
+    #[test]
     fn strips_lz_data_size_prefix() {
         assert_eq!(
             strip_lz_data_size_prefix(&[3, 0, 0, 0, 1, 2, 3]),
             &[1, 2, 3]
         );
         assert_eq!(strip_lz_data_size_prefix(&[1, 2, 3]), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn image_copy_scales_source_and_preserves_alignment_when_clipped() {
+        let red = [255, 0, 0, 255];
+        let green = [0, 255, 0, 255];
+        let blue = [0, 0, 255, 255];
+        let white = [255, 255, 255, 255];
+        let image = [red, green, blue, white].concat();
+        let mut surface = DisplaySurface {
+            width: 3,
+            height: 3,
+            format: 32,
+            data: vec![0; 3 * 3 * 4],
+        };
+
+        copy_image_to_surface(
+            &mut surface,
+            &image,
+            2,
+            2,
+            SpiceRect {
+                left: 0,
+                top: 0,
+                right: 2,
+                bottom: 2,
+            },
+            SpiceRect {
+                left: -1,
+                top: -1,
+                right: 3,
+                bottom: 3,
+            },
+            Some(&[SpiceRect {
+                left: 0,
+                top: 0,
+                right: 2,
+                bottom: 2,
+            }]),
+            false,
+        );
+
+        let pixel = |x: usize, y: usize| {
+            let offset = (y * surface.width as usize + x) * 4;
+            &surface.data[offset..offset + 4]
+        };
+        assert_eq!(pixel(0, 0), &red);
+        assert_eq!(pixel(1, 0), &green);
+        assert_eq!(pixel(0, 1), &blue);
+        assert_eq!(pixel(1, 1), &white);
+        assert_eq!(pixel(2, 2), &[0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn image_blend_composites_source_alpha() {
+        let mut surface = DisplaySurface {
+            width: 1,
+            height: 1,
+            format: 32,
+            data: vec![255, 0, 0, 255],
+        };
+
+        copy_image_to_surface(
+            &mut surface,
+            &[0, 0, 255, 128],
+            1,
+            1,
+            SpiceRect {
+                left: 0,
+                top: 0,
+                right: 1,
+                bottom: 1,
+            },
+            SpiceRect {
+                left: 0,
+                top: 0,
+                right: 1,
+                bottom: 1,
+            },
+            None,
+            true,
+        );
+
+        assert_eq!(surface.data, [127, 0, 128, 255]);
     }
 
     #[test]

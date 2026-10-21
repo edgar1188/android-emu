@@ -79,7 +79,6 @@ pub fn run() {
             adb::scrcpy_input_scroll,
             spice::spice_connect,
             spice::spice_disconnect,
-            spice::spice_frame_ack,
             emulator::start_android_emulator,
             titlebar::sync_theme
         ])

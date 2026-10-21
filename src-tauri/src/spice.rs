@@ -9,13 +9,12 @@ use tauri::{
     ipc::{Channel, InvokeResponseBody},
     State,
 };
-use tokio::sync::{mpsc, watch, Mutex};
+use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
 
 pub struct SpiceSession {
     client: SpiceClientShared,
     frame_task: JoinHandle<()>,
-    frame_ack: mpsc::Sender<u32>,
 }
 
 pub struct SpiceAppState {
@@ -230,9 +229,8 @@ pub async fn spice_connect(
         .await
         .map_err(|error| format!("No se pudo abrir los canales SPICE: {error}"))?;
 
-    let (frame_tx, mut frame_rx) =
+    let (frame_tx, frame_rx) =
         watch::channel(None::<spice_client::channels::display::DisplaySurface>);
-    let (frame_ack, mut frame_ack_rx) = mpsc::channel::<u32>(1);
     client
         .set_display_update_callback(0, move |surface| {
             frame_tx.send_replace(Some(surface.clone()));
@@ -242,14 +240,14 @@ pub async fn spice_connect(
 
     let frame_task = tokio::spawn(async move {
         let mut frame_id = 0_u32;
+        let mut frame_interval = tokio::time::interval(Duration::from_millis(33));
+        frame_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
-            if frame_rx.changed().await.is_err() {
-                break;
-            }
+            frame_interval.tick().await;
 
             let payload = {
-                let snapshot = frame_rx.borrow_and_update();
+                let snapshot = frame_rx.borrow();
                 let Some(surface) = snapshot.as_ref() else {
                     continue;
                 };
@@ -271,34 +269,13 @@ pub async fn spice_connect(
             if on_frame.send(InvokeResponseBody::Raw(payload)).is_err() {
                 break;
             }
-
-            let acknowledgement = tokio::time::timeout(Duration::from_secs(2), async {
-                loop {
-                    match frame_ack_rx.recv().await {
-                        Some(acknowledged_id) if acknowledged_id == frame_id => return true,
-                        Some(_) => continue,
-                        None => return false,
-                    }
-                }
-            })
-            .await;
-
-            match acknowledgement {
-                Ok(true) => {}
-                Ok(false) => return,
-                Err(_) => {}
-            }
         }
     });
 
     let event_loop_client = client.clone();
     {
         let mut session = state.session.lock().await;
-        *session = Some(SpiceSession {
-            client,
-            frame_task,
-            frame_ack,
-        });
+        *session = Some(SpiceSession { client, frame_task });
     }
 
     if let Err(error) = event_loop_client.start_event_loop().await {
@@ -309,19 +286,6 @@ pub async fn spice_connect(
         return Err(format!("No se pudo iniciar el vídeo SPICE: {error}"));
     }
 
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn spice_frame_ack(frame_id: u32, state: State<'_, SpiceAppState>) -> Result<(), String> {
-    let session = state.session.lock().await;
-    if let Some(active) = session.as_ref() {
-        active
-            .frame_ack
-            .send(frame_id)
-            .await
-            .map_err(|error| format!("No se pudo confirmar el frame SPICE: {error}"))?;
-    }
     Ok(())
 }
 

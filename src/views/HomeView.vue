@@ -501,7 +501,6 @@ async function updateSpiceFrame(rawFrame: ArrayBuffer | Uint8Array) {
     frameError.value = 'El frame SPICE recibido está incompleto.'
     return
   }
-  const frameId = new DataView(buffer).getUint32(0, true)
   try {
     frameError.value = ''
     await updateFrame(buffer)
@@ -513,12 +512,6 @@ async function updateSpiceFrame(rawFrame: ArrayBuffer | Uint8Array) {
     }
   } catch (error) {
     frameError.value = `No se pudo procesar el frame SPICE: ${String(error)}`
-  } finally {
-    try {
-      await invoke('spice_frame_ack', { frameId })
-    } catch (error) {
-      frameError.value = `No se pudo confirmar el frame SPICE: ${String(error)}`
-    }
   }
 }
 
