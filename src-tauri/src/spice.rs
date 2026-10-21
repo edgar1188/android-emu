@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -230,24 +231,24 @@ pub async fn spice_connect(
         .map_err(|error| format!("No se pudo abrir los canales SPICE: {error}"))?;
 
     let (frame_tx, frame_rx) =
-        watch::channel(None::<spice_client::channels::display::DisplaySurface>);
+        watch::channel(None::<Arc<spice_client::channels::display::DisplaySurface>>);
     client
         .set_display_update_callback(0, move |surface| {
-            frame_tx.send_replace(Some(surface.clone()));
+            frame_tx.send_replace(Some(Arc::new(surface.clone())));
         })
         .await
         .map_err(|error| format!("No se pudo registrar la actualización de vídeo: {error}"))?;
 
     let frame_task = tokio::spawn(async move {
         let mut frame_id = 0_u32;
-        let mut frame_interval = tokio::time::interval(Duration::from_millis(33));
+        let mut frame_interval = tokio::time::interval(Duration::from_millis(50));
         frame_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             frame_interval.tick().await;
 
             let payload = {
-                let snapshot = frame_rx.borrow();
+                let snapshot = frame_rx.borrow().clone();
                 let Some(surface) = snapshot.as_ref() else {
                     continue;
                 };

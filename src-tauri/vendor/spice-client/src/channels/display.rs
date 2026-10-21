@@ -224,6 +224,53 @@ fn parse_clip_rects(clip: &SpiceClip, data: &[u8]) -> Result<Option<Vec<SpiceRec
     }
 }
 
+fn copy_surface_region(
+    surface: &mut DisplaySurface,
+    source_position: SpicePoint,
+    destination: SpiceRect,
+    clips: Option<&[SpiceRect]>,
+) {
+    let width = (i64::from(destination.right) - i64::from(destination.left)).max(0);
+    let height = (i64::from(destination.bottom) - i64::from(destination.top)).max(0);
+    if width == 0 || height == 0 {
+        return;
+    }
+
+    let source = surface.data.clone();
+    let stride = surface.width as usize * 4;
+    let left = destination.left.max(0).min(surface.width as i32);
+    let top = destination.top.max(0).min(surface.height as i32);
+    let right = destination.right.max(0).min(surface.width as i32);
+    let bottom = destination.bottom.max(0).min(surface.height as i32);
+
+    for y in top..bottom {
+        for x in left..right {
+            if !inside_clip(clips, x, y) {
+                continue;
+            }
+
+            let source_x = i64::from(source_position.x) + i64::from(x - destination.left);
+            let source_y = i64::from(source_position.y) + i64::from(y - destination.top);
+            if source_x < 0
+                || source_y < 0
+                || source_x >= i64::from(surface.width)
+                || source_y >= i64::from(surface.height)
+            {
+                continue;
+            }
+
+            let source_offset = source_y as usize * stride + source_x as usize * 4;
+            let destination_offset = y as usize * stride + x as usize * 4;
+            if source_offset + 4 <= source.len()
+                && destination_offset + 4 <= surface.data.len()
+            {
+                surface.data[destination_offset..destination_offset + 4]
+                    .copy_from_slice(&source[source_offset..source_offset + 4]);
+            }
+        }
+    }
+}
+
 pub struct DisplayChannel {
     pub(crate) connection: ChannelConnection,
     surfaces: HashMap<u32, DisplaySurface>,
@@ -2059,14 +2106,14 @@ impl Channel for DisplayChannel {
                 match SpiceCopyBits::read(&mut cursor) {
                     Ok(copy_bits) => {
                         let surface_id = copy_bits.base.surface_id;
-                        let dest_rect = &copy_bits.base.box_;
-                        let src_pos = &copy_bits.src_pos;
+                        let dest_rect = copy_bits.base.box_;
+                        let clips = parse_clip_rects(&copy_bits.base.clip, data)?;
 
                         debug!(
                             "COPY_BITS: surface {} from ({}, {}) to rect ({},{}) - ({},{})",
                             surface_id,
-                            src_pos.x,
-                            src_pos.y,
+                            copy_bits.src_pos.x,
+                            copy_bits.src_pos.y,
                             dest_rect.left,
                             dest_rect.top,
                             dest_rect.right,
@@ -2075,59 +2122,13 @@ impl Channel for DisplayChannel {
 
                         // Perform the copy operation
                         if let Some(surface) = self.surfaces.get_mut(&surface_id) {
-                            // Calculate dimensions
-                            let rect_width = (dest_rect.right - dest_rect.left) as usize;
-                            let rect_height = (dest_rect.bottom - dest_rect.top) as usize;
-                            let bytes_per_pixel = 4;
-                            let stride = surface.width as usize * bytes_per_pixel;
-
-                            // Validate bounds
-                            let src_x = src_pos.x as usize;
-                            let src_y = src_pos.y as usize;
-                            let dest_x = dest_rect.left as usize;
-                            let dest_y = dest_rect.top as usize;
-
-                            if src_x + rect_width <= surface.width as usize
-                                && src_y + rect_height <= surface.height as usize
-                                && dest_x + rect_width <= surface.width as usize
-                                && dest_y + rect_height <= surface.height as usize
-                            {
-                                // Create a temporary buffer to hold the source data
-                                let mut temp_buffer =
-                                    Vec::with_capacity(rect_width * rect_height * bytes_per_pixel);
-
-                                // Copy source data to temp buffer
-                                for y in 0..rect_height {
-                                    let src_offset = (src_y + y) * stride + src_x * bytes_per_pixel;
-                                    let row_data = &surface.data
-                                        [src_offset..src_offset + rect_width * bytes_per_pixel];
-                                    temp_buffer.extend_from_slice(row_data);
-                                }
-
-                                // Copy from temp buffer to destination
-                                for y in 0..rect_height {
-                                    let dest_offset =
-                                        (dest_y + y) * stride + dest_x * bytes_per_pixel;
-                                    let src_row_offset = y * rect_width * bytes_per_pixel;
-                                    surface.data
-                                        [dest_offset..dest_offset + rect_width * bytes_per_pixel]
-                                        .copy_from_slice(
-                                            &temp_buffer[src_row_offset
-                                                ..src_row_offset + rect_width * bytes_per_pixel],
-                                        );
-                                }
-
-                                // Notify that the surface was updated
-                                self.notify_update(surface_id);
-
-                                debug!("COPY_BITS completed successfully");
-                            } else {
-                                warn!(
-                                    "COPY_BITS out of bounds: src ({},{}) dest ({},{}) rect {}x{} surface {}x{}",
-                                    src_x, src_y, dest_x, dest_y, rect_width, rect_height,
-                                    surface.width, surface.height
-                                );
-                            }
+                            copy_surface_region(
+                                surface,
+                                copy_bits.src_pos,
+                                dest_rect,
+                                clips.as_deref(),
+                            );
+                            self.notify_update(surface_id);
                         } else {
                             warn!("COPY_BITS: Surface {} not found", surface_id);
                         }
@@ -2375,6 +2376,42 @@ mod tests {
         );
 
         assert_eq!(surface.data, [127, 0, 128, 255]);
+    }
+
+    #[test]
+    fn copy_bits_preserves_overlap_and_honors_clip() {
+        let mut surface = DisplaySurface {
+            width: 3,
+            height: 1,
+            format: 32,
+            data: [
+                [1, 0, 0, 255],
+                [2, 0, 0, 255],
+                [3, 0, 0, 255],
+            ]
+            .concat(),
+        };
+
+        copy_surface_region(
+            &mut surface,
+            SpicePoint { x: 0, y: 0 },
+            SpiceRect {
+                left: 1,
+                top: 0,
+                right: 3,
+                bottom: 1,
+            },
+            Some(&[SpiceRect {
+                left: 2,
+                top: 0,
+                right: 3,
+                bottom: 1,
+            }]),
+        );
+
+        assert_eq!(&surface.data[0..4], &[1, 0, 0, 255]);
+        assert_eq!(&surface.data[4..8], &[2, 0, 0, 255]);
+        assert_eq!(&surface.data[8..12], &[2, 0, 0, 255]);
     }
 
     #[test]
