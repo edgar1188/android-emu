@@ -2,8 +2,8 @@ use crate::channels::{Channel, ChannelConnection};
 use crate::error::{Result, SpiceError};
 use crate::protocol::*;
 use binrw::BinRead;
-use std::cell::Cell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
@@ -73,6 +73,41 @@ pub struct StreamInfo {
     pub width: u32,
     pub height: u32,
     pub dest_rect: SpiceRect,
+}
+
+fn flush_pending_display_updates<F>(
+    surfaces: &HashMap<u32, DisplaySurface>,
+    callback: Option<&F>,
+    last_update_callback: &Cell<Option<Instant>>,
+    pending_update_surfaces: &RefCell<HashSet<u32>>,
+    force: bool,
+) where
+    F: Fn(&DisplaySurface) + ?Sized,
+{
+    let Some(callback) = callback else {
+        return;
+    };
+
+    let now = Instant::now();
+    if !force
+        && last_update_callback
+            .get()
+            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(33))
+    {
+        return;
+    }
+
+    let pending = std::mem::take(&mut *pending_update_surfaces.borrow_mut());
+    let mut notified = false;
+    for surface_id in pending {
+        if let Some(surface) = surfaces.get(&surface_id) {
+            callback(surface);
+            notified = true;
+        }
+    }
+    if notified {
+        last_update_callback.set(Some(now));
+    }
 }
 
 fn copy_image_to_surface(
@@ -281,6 +316,7 @@ pub struct DisplayChannel {
     #[cfg(target_arch = "wasm32")]
     update_callback: Option<Box<dyn Fn(&DisplaySurface)>>,
     last_update_callback: Cell<Option<Instant>>,
+    pending_update_surfaces: RefCell<HashSet<u32>>,
     image_cache: ImageCache,
     last_mark: Option<u32>, // Track last received mark for synchronization
 }
@@ -355,6 +391,7 @@ impl DisplayChannel {
             active_streams: HashMap::new(),
             update_callback: None,
             last_update_callback: Cell::new(None),
+            pending_update_surfaces: RefCell::new(HashSet::new()),
             image_cache: ImageCache::new(),
             last_mark: None,
         })
@@ -432,6 +469,7 @@ impl DisplayChannel {
             active_streams: HashMap::new(),
             update_callback: None,
             last_update_callback: Cell::new(None),
+            pending_update_surfaces: RefCell::new(HashSet::new()),
             image_cache: ImageCache::new(),
             last_mark: None,
         })
@@ -512,6 +550,7 @@ impl DisplayChannel {
             active_streams: HashMap::new(),
             update_callback: None,
             last_update_callback: Cell::new(None),
+            pending_update_surfaces: RefCell::new(HashSet::new()),
             image_cache: ImageCache::new(),
             last_mark: None,
         })
@@ -586,22 +625,16 @@ impl DisplayChannel {
     }
 
     fn notify_update_inner(&self, surface_id: u32, force: bool) {
-        let now = Instant::now();
-        if !force
-            && self
-                .last_update_callback
-                .get()
-                .is_some_and(|last| now.duration_since(last) < Duration::from_millis(33))
-        {
-            return;
-        }
-
-        if let Some(ref callback) = self.update_callback {
-            if let Some(surface) = self.surfaces.get(&surface_id) {
-                self.last_update_callback.set(Some(now));
-                callback(surface);
-            }
-        }
+        self.pending_update_surfaces
+            .borrow_mut()
+            .insert(surface_id);
+        flush_pending_display_updates(
+            &self.surfaces,
+            self.update_callback.as_deref(),
+            &self.last_update_callback,
+            &self.pending_update_surfaces,
+            force,
+        );
     }
 
     /// Resolve a SpiceAddress to get data from the message buffer
@@ -1060,8 +1093,26 @@ impl DisplayChannel {
             "DisplayChannel: Starting event loop for channel {}",
             self.connection.channel_id
         );
+        let mut update_interval = tokio::time::interval(Duration::from_millis(33));
         loop {
-            match self.connection.read_message().await {
+            let result = {
+                let read_message = self.connection.read_message();
+                tokio::pin!(read_message);
+                loop {
+                    tokio::select! {
+                        result = &mut read_message => break result,
+                        _ = update_interval.tick() => flush_pending_display_updates(
+                            &self.surfaces,
+                            self.update_callback.as_deref(),
+                            &self.last_update_callback,
+                            &self.pending_update_surfaces,
+                            false,
+                        ),
+                    }
+                }
+            };
+
+            match result {
                 Ok((header, data)) => {
                     if let Err(error) = self.handle_message(&header, &data).await {
                         error!(
@@ -2242,6 +2293,46 @@ mod tests {
     use super::*;
     use binrw::BinWrite;
     use std::io::Cursor;
+
+    #[test]
+    fn throttled_display_updates_flush_the_latest_surface() {
+        let mut surfaces = HashMap::from([(
+            0,
+            DisplaySurface {
+                width: 1,
+                height: 1,
+                format: 32,
+                data: vec![1, 0, 0, 255],
+            },
+        )]);
+        let last_update_callback = Cell::new(Some(Instant::now()));
+        let pending_update_surfaces = RefCell::new(HashSet::from([0]));
+        let observed_pixel = Cell::new(0_u8);
+        let callback = |surface: &DisplaySurface| observed_pixel.set(surface.data[0]);
+
+        flush_pending_display_updates(
+            &surfaces,
+            Some(&callback),
+            &last_update_callback,
+            &pending_update_surfaces,
+            false,
+        );
+        assert_eq!(observed_pixel.get(), 0);
+        assert_eq!(pending_update_surfaces.borrow().len(), 1);
+
+        surfaces.get_mut(&0).unwrap().data[0] = 2;
+        last_update_callback.set(Some(Instant::now() - Duration::from_millis(34)));
+        flush_pending_display_updates(
+            &surfaces,
+            Some(&callback),
+            &last_update_callback,
+            &pending_update_surfaces,
+            false,
+        );
+
+        assert_eq!(observed_pixel.get(), 2);
+        assert!(pending_update_surfaces.borrow().is_empty());
+    }
 
     #[test]
     fn parses_clip_address_before_trailing_alignment() {
