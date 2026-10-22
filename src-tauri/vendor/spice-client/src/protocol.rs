@@ -832,6 +832,7 @@ pub const SPICE_BITMAP_FMT_24BIT: u8 = 7;
 pub const SPICE_BITMAP_FMT_32BIT: u8 = 8;
 pub const SPICE_BITMAP_FMT_RGBA: u8 = 9;
 pub const SPICE_BITMAP_FMT_8BIT_A: u8 = 10;
+pub const SPICE_BITMAP_FLAGS_TOP_DOWN: u8 = 1;
 
 #[binrw]
 #[brw(little)]

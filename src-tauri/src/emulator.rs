@@ -331,10 +331,10 @@ pub async fn start_android_emulator(
                     "user,id=user0,hostfwd=tcp:127.0.0.1:5555-:5555",
                     "-device",
                     "virtio-net-pci,netdev=user0",
-                    "-vga",
-                    "qxl",
+                    "-device",
+                    "virtio-vga-gl",
                     "-spice",
-                    "port=5556,addr=127.0.0.1,disable-ticketing=on",
+                    "port=5556,addr=127.0.0.1,disable-ticketing=on,gl=on",
                     "-display",
                     "none",
                 ])

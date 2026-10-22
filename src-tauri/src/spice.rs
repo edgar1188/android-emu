@@ -13,6 +13,8 @@ use tauri::{
 use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
 
+const SPICE_FRAME_INTERVAL: Duration = Duration::from_millis(16);
+
 pub struct SpiceSession {
     client: SpiceClientShared,
     frame_task: JoinHandle<()>,
@@ -241,7 +243,7 @@ pub async fn spice_connect(
 
     let frame_task = tokio::spawn(async move {
         let mut frame_id = 0_u32;
-        let mut frame_interval = tokio::time::interval(Duration::from_millis(50));
+        let mut frame_interval = tokio::time::interval(SPICE_FRAME_INTERVAL);
         frame_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
@@ -273,12 +275,15 @@ pub async fn spice_connect(
         }
     });
 
-    let event_loop_client = client.clone();
     {
         let mut session = state.session.lock().await;
-        *session = Some(SpiceSession { client, frame_task });
+        *session = Some(SpiceSession {
+            client: client.clone(),
+            frame_task,
+        });
     }
 
+    let event_loop_client = client.clone();
     if let Err(error) = event_loop_client.start_event_loop().await {
         if let Some(failed_session) = state.session.lock().await.take() {
             failed_session.frame_task.abort();

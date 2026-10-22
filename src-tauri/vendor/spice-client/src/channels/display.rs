@@ -9,6 +9,8 @@ use tracing::{debug, error, info, warn};
 
 // Integration tests moved to tests/display_integration.rs
 
+const DISPLAY_UPDATE_INTERVAL: Duration = Duration::from_millis(16);
+
 #[path = "video_tests.rs"]
 mod video_tests;
 
@@ -92,7 +94,7 @@ fn flush_pending_display_updates<F>(
     if !force
         && last_update_callback
             .get()
-            .is_some_and(|last| now.duration_since(last) < Duration::from_millis(33))
+            .is_some_and(|last| now.duration_since(last) < DISPLAY_UPDATE_INTERVAL)
     {
         return;
     }
@@ -319,6 +321,69 @@ pub struct DisplayChannel {
     pending_update_surfaces: RefCell<HashSet<u32>>,
     image_cache: ImageCache,
     last_mark: Option<u32>, // Track last received mark for synchronization
+}
+
+fn decode_bitmap(
+    bitmap: &SpiceBitmap,
+    data: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<Option<(Vec<u8>, u32, u32)>> {
+    let bytes_per_pixel = match bitmap.format {
+        SPICE_BITMAP_FMT_32BIT | SPICE_BITMAP_FMT_RGBA => 4,
+        SPICE_BITMAP_FMT_24BIT => 3,
+        SPICE_BITMAP_FMT_16BIT => 2,
+        SPICE_BITMAP_FMT_8BIT | SPICE_BITMAP_FMT_8BIT_A => 1,
+        _ => {
+            warn!("Unsupported bitmap format: {}", bitmap.format);
+            return Ok(None);
+        }
+    };
+
+    let expected_size = (bitmap.stride * height) as usize;
+    if data.len() < expected_size {
+        warn!("Bitmap data too small: {} < {}", data.len(), expected_size);
+        return Ok(None);
+    }
+
+    let mut rgba_data = Vec::with_capacity((width * height * 4) as usize);
+
+    for y in 0..height {
+        let source_y = if bitmap.flags & SPICE_BITMAP_FLAGS_TOP_DOWN != 0 {
+            y
+        } else {
+            height - 1 - y
+        };
+        let row_offset = (source_y * bitmap.stride) as usize;
+        for x in 0..width {
+            let pixel_offset = row_offset + (x as usize * bytes_per_pixel);
+
+            match bitmap.format {
+                SPICE_BITMAP_FMT_32BIT => {
+                    rgba_data.extend_from_slice(&[
+                        data[pixel_offset + 2],
+                        data[pixel_offset + 1],
+                        data[pixel_offset],
+                        255,
+                    ]);
+                }
+                SPICE_BITMAP_FMT_RGBA => {
+                    rgba_data.extend_from_slice(&data[pixel_offset..pixel_offset + 4]);
+                }
+                SPICE_BITMAP_FMT_24BIT => {
+                    rgba_data.extend_from_slice(&[
+                        data[pixel_offset + 2],
+                        data[pixel_offset + 1],
+                        data[pixel_offset],
+                        255,
+                    ]);
+                }
+                _ => rgba_data.extend_from_slice(&[0, 0, 0, 255]),
+            }
+        }
+    }
+
+    Ok(Some((rgba_data, width, height)))
 }
 
 impl DisplayChannel {
@@ -683,95 +748,17 @@ impl DisplayChannel {
         address: SpiceAddress,
         data: &[u8],
     ) -> Result<Option<(Vec<u8>, u32, u32)>> {
-        // Check if this is a special cached image address
-        // SPICE uses high addresses (> 0x10000000) for special encodings
+        // Cached-image addresses have no inline descriptor in the message.
         if address > 0x10000000 && (address & 0xFFFFFFFF) as usize >= data.len() {
-            // This is likely a cached image reference
-            // Extract the cache ID from the address encoding
-            let cache_id = address & 0xFFFFFFFF; // Lower 32 bits might be the cache ID
+            let cache_id = address & 0xFFFFFFFF;
 
-            debug!(
-                "Detected cached image reference with address 0x{:x}, cache_id: {}",
-                address, cache_id
-            );
-
-            // Try to get from cache
             if let Some(cached) = self.image_cache.get(cache_id) {
                 debug!("Found cached image: {}x{}", cached.width, cached.height);
                 return Ok(Some((cached.data.clone(), cached.width, cached.height)));
-            } else {
-                // Cache miss - this happens when server expects us to have cached images
-                // but we don't (e.g., cache was disabled or cleared)
-                debug!(
-                    "Cache miss for ID {} - server may be using stale cache references",
-                    cache_id
-                );
-
-                // For well-known cache IDs, we can provide fallback patterns
-                // These IDs are commonly used by SPICE servers for basic patterns
-                match cache_id {
-                    12288 => {
-                        // ID 12288 (0x3000) - checkerboard pattern
-                        let width = 64;
-                        let height = 64;
-                        let mut data = Vec::with_capacity((width * height * 4) as usize);
-
-                        for y in 0..height {
-                            for x in 0..width {
-                                let is_dark = ((x / 8) + (y / 8)) % 2 == 0;
-                                if is_dark {
-                                    data.extend_from_slice(&[64, 64, 64, 255]); // Dark gray
-                                } else {
-                                    data.extend_from_slice(&[192, 192, 192, 255]);
-                                    // Light gray
-                                }
-                            }
-                        }
-
-                        // Cache this pattern for future use
-                        self.image_cache
-                            .insert(cache_id, data.clone(), width, height);
-                        debug!(
-                            "Created checkerboard fallback pattern for cache ID {}",
-                            cache_id
-                        );
-                        return Ok(Some((data, width, height)));
-                    }
-                    81920 => {
-                        // ID 81920 (0x14000) - solid gray pattern
-                        let width = 32;
-                        let height = 32;
-                        let pixel = vec![128u8, 128, 128, 255]; // RGBA gray
-                        let mut data = Vec::with_capacity((width * height * 4) as usize);
-                        for _ in 0..(width * height) {
-                            data.extend_from_slice(&pixel);
-                        }
-
-                        // Cache this pattern for future use
-                        self.image_cache
-                            .insert(cache_id, data.clone(), width, height);
-                        debug!(
-                            "Created solid gray fallback pattern for cache ID {}",
-                            cache_id
-                        );
-                        return Ok(Some((data, width, height)));
-                    }
-                    _ => {
-                        // For other cache IDs, create a generic pattern based on the ID
-                        let width = 32;
-                        let height = 32;
-                        let color_component = ((cache_id & 0xFF) as u8).saturating_add(64);
-                        let data = vec![color_component, color_component, color_component, 255]
-                            .repeat((width * height) as usize);
-
-                        // Cache this pattern for future use
-                        self.image_cache
-                            .insert(cache_id, data.clone(), width, height);
-                        debug!("Created generic fallback pattern for cache ID {}", cache_id);
-                        return Ok(Some((data, width, height)));
-                    }
-                }
             }
+
+            warn!("SPICE image cache miss for image ID {cache_id}");
+            return Ok(None);
         }
 
         let image_data = match self.resolve_address(address, data) {
@@ -803,7 +790,7 @@ impl DisplayChannel {
                 }
 
                 let bitmap_data = &data[bitmap_data_offset..];
-                self.decode_bitmap(&bitmap, bitmap_data, descriptor.width, descriptor.height)
+                decode_bitmap(&bitmap, bitmap_data, descriptor.width, descriptor.height)
             }
             SPICE_IMAGE_TYPE_QUIC => {
                 let compressed_data = &image_data[cursor.position() as usize..];
@@ -886,69 +873,6 @@ impl DisplayChannel {
         }
 
         Ok(result)
-    }
-
-    /// Decode a raw bitmap to RGBA format
-    fn decode_bitmap(
-        &self,
-        bitmap: &SpiceBitmap,
-        data: &[u8],
-        width: u32,
-        height: u32,
-    ) -> Result<Option<(Vec<u8>, u32, u32)>> {
-        let bytes_per_pixel = match bitmap.format {
-            SPICE_BITMAP_FMT_32BIT | SPICE_BITMAP_FMT_RGBA => 4,
-            SPICE_BITMAP_FMT_24BIT => 3,
-            SPICE_BITMAP_FMT_16BIT => 2,
-            SPICE_BITMAP_FMT_8BIT | SPICE_BITMAP_FMT_8BIT_A => 1,
-            _ => {
-                warn!("Unsupported bitmap format: {}", bitmap.format);
-                return Ok(None);
-            }
-        };
-
-        let expected_size = (bitmap.stride * height) as usize;
-        if data.len() < expected_size {
-            warn!("Bitmap data too small: {} < {}", data.len(), expected_size);
-            return Ok(None);
-        }
-
-        // Convert to RGBA
-        let mut rgba_data = Vec::with_capacity((width * height * 4) as usize);
-
-        for y in 0..height {
-            let row_offset = (y * bitmap.stride) as usize;
-            for x in 0..width {
-                let pixel_offset = row_offset + (x as usize * bytes_per_pixel);
-
-                match bitmap.format {
-                    SPICE_BITMAP_FMT_32BIT => {
-                        // BGRA -> RGBA
-                        rgba_data.push(data[pixel_offset + 2]); // R
-                        rgba_data.push(data[pixel_offset + 1]); // G
-                        rgba_data.push(data[pixel_offset]); // B
-                        rgba_data.push(data[pixel_offset + 3]); // A
-                    }
-                    SPICE_BITMAP_FMT_RGBA => {
-                        // Already RGBA
-                        rgba_data.extend_from_slice(&data[pixel_offset..pixel_offset + 4]);
-                    }
-                    SPICE_BITMAP_FMT_24BIT => {
-                        // BGR -> RGBA
-                        rgba_data.push(data[pixel_offset + 2]); // R
-                        rgba_data.push(data[pixel_offset + 1]); // G
-                        rgba_data.push(data[pixel_offset]); // B
-                        rgba_data.push(255); // A
-                    }
-                    _ => {
-                        // Fallback for other formats
-                        rgba_data.extend_from_slice(&[0, 0, 0, 255]);
-                    }
-                }
-            }
-        }
-
-        Ok(Some((rgba_data, width, height)))
     }
 
     /// Decode LZ4 compressed image
@@ -1093,7 +1017,7 @@ impl DisplayChannel {
             "DisplayChannel: Starting event loop for channel {}",
             self.connection.channel_id
         );
-        let mut update_interval = tokio::time::interval(Duration::from_millis(33));
+        let mut update_interval = tokio::time::interval(DISPLAY_UPDATE_INTERVAL);
         loop {
             let result = {
                 let read_message = self.connection.read_message();
@@ -2295,6 +2219,75 @@ mod tests {
     use std::io::Cursor;
 
     #[test]
+    fn bitmap_32bit_ignores_reserved_alpha_byte() {
+        let bitmap = SpiceBitmap {
+            format: SPICE_BITMAP_FMT_32BIT,
+            flags: 0,
+            x: 1,
+            y: 1,
+            stride: 4,
+            palette: 0,
+            data: 0,
+        };
+
+        for reserved in [0, 64, 255] {
+            let (pixels, width, height) =
+                decode_bitmap(&bitmap, &[3, 2, 1, reserved], 1, 1)
+                    .unwrap()
+                    .unwrap();
+            assert_eq!((width, height), (1, 1));
+            assert_eq!(pixels, [1, 2, 3, 255]);
+        }
+    }
+
+    #[test]
+    fn bitmap_rgba_preserves_alpha_channel() {
+        let bitmap = SpiceBitmap {
+            format: SPICE_BITMAP_FMT_RGBA,
+            flags: 0,
+            x: 1,
+            y: 1,
+            stride: 4,
+            palette: 0,
+            data: 0,
+        };
+
+        let (pixels, _, _) = decode_bitmap(&bitmap, &[1, 2, 3, 64], 1, 1)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(pixels, [1, 2, 3, 64]);
+    }
+
+    #[test]
+    fn bitmap_scanline_order_follows_top_down_flag() {
+        let mut bitmap = SpiceBitmap {
+            format: SPICE_BITMAP_FMT_32BIT,
+            flags: 0,
+            x: 1,
+            y: 2,
+            stride: 4,
+            palette: 0,
+            data: 0,
+        };
+        let bitmap_data = [
+            0, 0, 255, 0, // red, first source row
+            255, 0, 0, 0, // blue, second source row
+        ];
+
+        let (bottom_up_pixels, _, _) = decode_bitmap(&bitmap, &bitmap_data, 1, 2)
+            .unwrap()
+            .unwrap();
+        assert_eq!(bottom_up_pixels, [0, 0, 255, 255, 255, 0, 0, 255]);
+
+        bitmap.flags = SPICE_BITMAP_FLAGS_TOP_DOWN;
+        let (top_down_pixels, _, _) = decode_bitmap(&bitmap, &bitmap_data, 1, 2)
+            .unwrap()
+            .unwrap();
+        assert_eq!(top_down_pixels, [255, 0, 0, 255, 0, 0, 255, 255]);
+    }
+
+    #[test]
     fn throttled_display_updates_flush_the_latest_surface() {
         let mut surfaces = HashMap::from([(
             0,
@@ -2321,7 +2314,7 @@ mod tests {
         assert_eq!(pending_update_surfaces.borrow().len(), 1);
 
         surfaces.get_mut(&0).unwrap().data[0] = 2;
-        last_update_callback.set(Some(Instant::now() - Duration::from_millis(34)));
+        last_update_callback.set(Some(Instant::now() - Duration::from_millis(17)));
         flush_pending_display_updates(
             &surfaces,
             Some(&callback),
