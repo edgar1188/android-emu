@@ -321,6 +321,12 @@ pub async fn start_android_emulator(
                     "-smp",
                     "2,cores=2,sockets=1",
                     "-daemonize",
+                    "-audiodev",
+                    "alsa,id=snd0",
+                    "-device",
+                    "intel-hda",
+                    "-device",
+                    "hda-duplex,audiodev=snd0",
                     "-pidfile",
                 ])
                 .arg(&pid_file)
