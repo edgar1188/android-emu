@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
 import { Channel, invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { CheckCircle, RefreshCw, Smartphone, XCircle } from '@lucide/vue'
 
 type AdbDevice = {
   serial: string
   model: string
+  state: string
 }
 
 const devices = ref<AdbDevice[]>([])
@@ -14,6 +16,7 @@ const status = ref('')
 const isLoading = ref(false)
 const errorMessage = ref('')
 let activeFrameChannel: Channel<ArrayBuffer> | undefined
+let unlistenVideoError: (() => void) | undefined
 let stopAutoConnect = false
 const emit = defineEmits<{
   frame: [frame: ArrayBuffer]
@@ -31,21 +34,31 @@ async function refreshDevices(): Promise<boolean> {
     const list = (await invoke('adb_devices')) as AdbDevice[]
     devices.value = list
 
-    const emulator = list.find((device) => device.serial === '127.0.0.1:5555')
+    const onlineDevices = list.filter((device) => device.state === 'device')
+    const emulator = onlineDevices.find((device) => device.serial === '127.0.0.1:5555')
     const preferred = emulator
-      ?? list.find((device) => device.serial.includes('emulator') || device.serial.includes('5554'))
-      ?? list[0]
+      ?? onlineDevices.find((device) => device.serial.includes('emulator') || device.serial.includes('5554'))
+      ?? onlineDevices[0]
 
     if (preferred) {
       selectedSerial.value = preferred.serial
-    } else if (!selectedSerial.value) {
+    } else {
       selectedSerial.value = ''
     }
 
-    if (!list.length) {
+    const emulatorOffline = list.some(
+      (device) => device.serial === '127.0.0.1:5555' && device.state === 'offline',
+    )
+    if (emulatorOffline) {
+      status.value = ''
+      errorMessage.value = 'ADB detecta el emulador como offline; intentando restablecer la conexión...'
+    } else if (!onlineDevices.length) {
+      errorMessage.value = ''
       status.value = 'Esperando conexión ADB...'
+    } else {
+      errorMessage.value = ''
+      status.value = ''
     }
-    errorMessage.value = ''
     return Boolean(emulator)
   } catch (error) {
     errorMessage.value = String(error)
@@ -59,7 +72,9 @@ async function connectDevice(): Promise<boolean> {
     return false
   }
 
-  if (!selectedSerial.value) {
+  if (!selectedSerial.value || !devices.value.some(
+    (device) => device.serial === selectedSerial.value && device.state === 'device',
+  )) {
     errorMessage.value = 'Selecciona un dispositivo ADB antes de conectar.'
     return false
   }
@@ -97,11 +112,22 @@ async function waitForDeviceAndConnect() {
 }
 
 onMounted(() => {
+  void listen<string>('adb-video-error', (event) => {
+    errorMessage.value = event.payload
+  })
+    .then((unlisten) => {
+      if (stopAutoConnect) unlisten()
+      else unlistenVideoError = unlisten
+    })
+    .catch((error: unknown) => {
+      errorMessage.value = `No se pudo recibir el estado del vídeo ADB: ${String(error)}`
+    })
   void waitForDeviceAndConnect()
 })
 
 onUnmounted(() => {
   stopAutoConnect = true
+  unlistenVideoError?.()
   const channel = activeFrameChannel
   if (!(window as any).__TAURI_INTERNALS__) {
     return
@@ -129,12 +155,12 @@ onUnmounted(() => {
       <label for="adb-device">Dispositivo</label>
       <select id="adb-device" v-model="selectedSerial" class="input-canaima" :disabled="isLoading || !devices.length">
         <option value="" disabled>Selecciona un dispositivo</option>
-        <option v-for="device in devices" :key="device.serial" :value="device.serial">
-          {{ device.model }} · {{ device.serial }}
+        <option v-for="device in devices" :key="device.serial" :value="device.serial" :disabled="device.state !== 'device'">
+          {{ device.model }} · {{ device.serial }}{{ device.state === 'device' ? '' : ` (${device.state})` }}
         </option>
       </select>
 
-      <button class="btn-canaima" type="button" :disabled="isLoading || !selectedSerial" @click="connectDevice">
+      <button class="btn-canaima" type="button" :disabled="isLoading || !devices.some((device) => device.serial === selectedSerial && device.state === 'device')" @click="connectDevice">
         <RefreshCw v-if="isLoading" :size="18" class="spin-anim" aria-hidden="true" />
         <Smartphone v-else :size="18" aria-hidden="true" />
         {{ isLoading ? 'Conectando...' : 'Conectar pantalla ADB' }}

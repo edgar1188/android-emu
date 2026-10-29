@@ -236,7 +236,7 @@ async fn emulator_port_is_listening() -> bool {
 }
 
 async fn connect_adb_to_emulator() -> Result<(), String> {
-    let output = Command::new("adb")
+    let output = Command::new(crate::adb::adb_executable()?)
         .args(["connect", "127.0.0.1:5555"])
         .output()
         .await
@@ -246,7 +246,7 @@ async fn connect_adb_to_emulator() -> Result<(), String> {
         return Err(format!("ADB no pudo conectarse con QEMU: {details}"));
     }
 
-    let devices = Command::new("adb")
+    let devices = Command::new(crate::adb::adb_executable()?)
         .args(["devices"])
         .output()
         .await
@@ -260,6 +260,30 @@ async fn connect_adb_to_emulator() -> Result<(), String> {
         .lines()
         .any(|line| line.split_whitespace().eq(["127.0.0.1:5555", "device"]));
     if !is_connected {
+        let is_offline = String::from_utf8_lossy(&devices.stdout)
+            .lines()
+            .any(|line| line.split_whitespace().eq(["127.0.0.1:5555", "offline"]));
+        if is_offline {
+            let disconnect = Command::new(crate::adb::adb_executable()?)
+                .args(["disconnect", "127.0.0.1:5555"])
+                .output()
+                .await
+                .map_err(|error| {
+                    format!("No se pudo reiniciar la conexión ADB offline: {error}")
+                })?;
+            if !disconnect.status.success() {
+                let details = String::from_utf8_lossy(&disconnect.stderr)
+                    .trim()
+                    .to_string();
+                return Err(format!(
+                    "No se pudo reiniciar la conexión ADB offline: {details}"
+                ));
+            }
+            return Err(
+                "ADB_OFFLINE: se está restableciendo la conexión del emulador.".to_string(),
+            );
+        }
+
         let details = String::from_utf8_lossy(&output.stdout).trim().to_string();
         return Err(format!(
             "QEMU escucha en el puerto 5555, pero ADB no reconoce el dispositivo: {details}"
@@ -273,6 +297,7 @@ async fn wait_for_adb_connection() -> Result<(), String> {
         if emulator_port_is_listening().await {
             match connect_adb_to_emulator().await {
                 Ok(()) => return Ok(()),
+                Err(error) if error.starts_with("ADB_OFFLINE:") => {}
                 Err(error) if error.starts_with("QEMU escucha en el puerto 5555") => {}
                 Err(error) => return Err(error),
             }
@@ -301,7 +326,10 @@ pub async fn start_android_emulator(
             .ok_or_else(|| "No se pudo determinar el directorio de configuración.".to_string())?
             .join("qemu.pid");
 
-        let _ = Command::new("adb").arg("kill-server").output().await;
+        let _ = Command::new(crate::adb::adb_executable()?)
+            .arg("kill-server")
+            .output()
+            .await;
 
         let qemu_status = if qemu_is_running(&pid_file, &image_path)? {
             "QEMU ya estaba ejecutándose.".to_string()
@@ -359,7 +387,7 @@ pub async fn start_android_emulator(
         format!("{qemu_status} {image_status}")
     };
 
-    let adb_output = Command::new("adb")
+    let adb_output = Command::new(crate::adb::adb_executable()?)
         .arg("start-server")
         .output()
         .await
@@ -381,7 +409,7 @@ pub async fn shutdown_android_emulator() -> Result<(), String> {
         return Ok(());
     }
 
-    let output = Command::new("adb")
+    let output = Command::new(crate::adb::adb_executable()?)
         .args(["connect", "127.0.0.1:5555"])
         .output()
         .await
@@ -395,7 +423,7 @@ pub async fn shutdown_android_emulator() -> Result<(), String> {
 
     let output = timeout(
         Duration::from_secs(15),
-        Command::new("adb")
+        Command::new(crate::adb::adb_executable()?)
             .args(["-s", "127.0.0.1:5555", "shell", "reboot", "-p"])
             .output(),
     )

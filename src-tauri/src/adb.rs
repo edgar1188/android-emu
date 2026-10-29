@@ -5,9 +5,10 @@ use fadb_scrcpy::{
 };
 use serde::Serialize;
 use std::{
+    env,
     io::Write,
     net::{TcpListener, TcpStream as StdTcpStream},
-    path::Path,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::{
         atomic::{AtomicU32, Ordering},
@@ -17,7 +18,7 @@ use std::{
 };
 use tauri::{
     ipc::{Channel, InvokeResponseBody},
-    State,
+    AppHandle, Emitter, State,
 };
 use tokio::{
     net::TcpStream,
@@ -28,6 +29,55 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 static NEXT_SCRCPY_ID: AtomicU32 = AtomicU32::new(1);
+
+pub(crate) fn adb_executable() -> Result<PathBuf, String> {
+    let executable = if cfg!(windows) { "adb.exe" } else { "adb" };
+    let mut candidates = env::var_os("PATH")
+        .map(|path| {
+            env::split_paths(&path)
+                .map(|directory| directory.join(executable))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    for variable in ["ANDROID_HOME", "ANDROID_SDK_ROOT"] {
+        if let Some(sdk_root) = env::var_os(variable) {
+            candidates.push(
+                PathBuf::from(sdk_root)
+                    .join("platform-tools")
+                    .join(executable),
+            );
+        }
+    }
+    if let Some(home) = env::var_os("HOME") {
+        candidates.push(
+            PathBuf::from(home)
+                .join("Android")
+                .join("Sdk")
+                .join("platform-tools")
+                .join(executable),
+        );
+    }
+    if cfg!(target_os = "linux") {
+        candidates.extend(
+            [
+                "/usr/bin/adb",
+                "/usr/local/bin/adb",
+                "/usr/lib/android-sdk/platform-tools/adb",
+            ]
+            .into_iter()
+            .map(PathBuf::from),
+        );
+    }
+
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+        .map(|candidate| candidate.canonicalize().unwrap_or(candidate))
+        .ok_or_else(|| {
+            "No se encontró ADB. Instala Android Platform Tools (por ejemplo, `sudo apt install adb`) o agrega `platform-tools` al PATH.".to_string()
+        })
+}
 
 fn next_scrcpy_id() -> u32 {
     let timestamp = SystemTime::now()
@@ -123,12 +173,37 @@ impl ScrcpyControl {
 pub struct AdbDevice {
     serial: String,
     model: String,
+    state: String,
+}
+
+fn parse_adb_devices(output: &str) -> Vec<AdbDevice> {
+    output
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let serial = fields.next()?;
+            let state = fields.next()?;
+            let model = fields
+                .find_map(|field| field.strip_prefix("model:"))
+                .unwrap_or(serial)
+                .replace('_', " ");
+            Some(AdbDevice {
+                serial: serial.to_string(),
+                model,
+                state: state.to_string(),
+            })
+        })
+        .collect()
 }
 
 async fn run_adb(args: &[&str]) -> Result<std::process::Output, String> {
     tokio::time::timeout(
         Duration::from_secs(5),
-        Command::new("adb").args(args).kill_on_drop(true).output(),
+        Command::new(adb_executable()?)
+            .args(args)
+            .kill_on_drop(true)
+            .output(),
     )
     .await
     .map_err(|_| "ADB tardó demasiado en responder.".to_string())?
@@ -142,33 +217,16 @@ pub async fn adb_devices() -> Result<Vec<AdbDevice>, String> {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
 
-    let devices = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .skip(1)
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let serial = fields.next()?;
-            if fields.next()? != "device" {
-                return None;
-            }
-            let model = fields
-                .find_map(|field| field.strip_prefix("model:"))
-                .unwrap_or(serial)
-                .replace('_', " ");
-            Some(AdbDevice {
-                serial: serial.to_string(),
-                model,
-            })
-        })
-        .collect();
-
-    Ok(devices)
+    Ok(parse_adb_devices(&String::from_utf8_lossy(&output.stdout)))
 }
 
 async fn run_adb_owned(args: &[String]) -> Result<std::process::Output, String> {
     tokio::time::timeout(
         Duration::from_secs(10),
-        Command::new("adb").args(args).kill_on_drop(true).output(),
+        Command::new(adb_executable()?)
+            .args(args)
+            .kill_on_drop(true)
+            .output(),
     )
     .await
     .map_err(|_| "El comando ADB tardó demasiado en responder.".to_string())?
@@ -215,6 +273,7 @@ async fn stop_session(mut session: AdbSession) {
 pub async fn adb_connect(
     serial: String,
     on_frame: Channel<InvokeResponseBody>,
+    app: AppHandle,
     state: State<'_, AdbAppState>,
 ) -> Result<(), String> {
     if let Some(session) = state.session.lock().await.take() {
@@ -222,8 +281,13 @@ pub async fn adb_connect(
     }
 
     let devices = adb_devices().await?;
-    if !devices.iter().any(|device| device.serial == serial) {
-        return Err(format!("El dispositivo ADB {serial} no está conectado."));
+    if !devices
+        .iter()
+        .any(|device| device.serial == serial && device.state == "device")
+    {
+        return Err(format!(
+            "El dispositivo ADB {serial} no está conectado o aparece offline."
+        ));
     }
     let decoder = VideoDecoder::new()
         .map_err(|error| format!("No se pudo inicializar el decoder H.264: {error}"))?;
@@ -279,7 +343,7 @@ pub async fn adb_connect(
         "video_bit_rate=16000000".to_string(),
         "max_fps=60".to_string(),
     ];
-    let mut server_command = Command::new("adb");
+    let mut server_command = Command::new(adb_executable()?);
     server_command
         .args([
             "-s",
@@ -365,6 +429,7 @@ pub async fn adb_connect(
 
     let cancellation = CancellationToken::new();
     let task_cancellation = cancellation.clone();
+    let app_handle = app.clone();
     let frame_task = tokio::spawn(async move {
         let mut decoder = decoder;
         let mut frame_id = 0u32;
@@ -389,13 +454,23 @@ pub async fn adb_connect(
                     task_cancellation.cancel();
                 }
             };
-        let _ = demux_packets(
+        let result = demux_packets(
             &mut video,
             &mut decoder,
             &task_cancellation,
             &mut send_frame,
         )
         .await;
+        if !task_cancellation.is_cancelled() {
+            let message = match result {
+                Ok(0) => "El stream scrcpy terminó antes de enviar frames.".to_string(),
+                Ok(count) => format!("El stream scrcpy terminó después de {count} frames."),
+                Err(error) => format!("Se interrumpió el stream de vídeo scrcpy: {error}"),
+            };
+            if let Err(error) = app_handle.emit("adb-video-error", message) {
+                eprintln!("No se pudo informar el error del stream ADB: {error}");
+            }
+        }
     });
 
     *state.session.lock().await = Some(AdbSession {
@@ -407,6 +482,25 @@ pub async fn adb_connect(
         control,
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_adb_devices;
+
+    #[test]
+    fn parses_online_and_offline_adb_devices() {
+        let devices = parse_adb_devices(
+            "List of devices attached\n127.0.0.1:5555 offline product:android model:Test_Device\nemulator-5554 device product:sdk model:Android_Emulator\n",
+        );
+
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].serial, "127.0.0.1:5555");
+        assert_eq!(devices[0].state, "offline");
+        assert_eq!(devices[1].serial, "emulator-5554");
+        assert_eq!(devices[1].state, "device");
+        assert_eq!(devices[1].model, "Android Emulator");
+    }
 }
 
 #[tauri::command]
@@ -492,7 +586,10 @@ async fn run_input(state: State<'_, AdbAppState>, input: &[String]) -> Result<()
     args.extend_from_slice(input);
     let output = tokio::time::timeout(
         Duration::from_secs(5),
-        Command::new("adb").args(args).kill_on_drop(true).output(),
+        Command::new(adb_executable()?)
+            .args(args)
+            .kill_on_drop(true)
+            .output(),
     )
     .await
     .map_err(|_| "El comando de entrada ADB expiró.".to_string())?
@@ -591,7 +688,7 @@ pub async fn adb_install_apk(path: String, state: State<'_, AdbAppState>) -> Res
 
     let output = tokio::time::timeout(
         Duration::from_secs(180),
-        Command::new("adb")
+        Command::new(adb_executable()?)
             .args(["-s", &serial, "install", "-r"])
             .arg(apk_path)
             .kill_on_drop(true)
