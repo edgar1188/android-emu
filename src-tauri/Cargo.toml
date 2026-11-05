@@ -29,6 +29,7 @@ fadb-scrcpy = "0.8.12"
 tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 canaima-gpu = "0.1.1"
+canaima-titlebar = "0.1.1"
 
 [profile.release]
 panic = "abort"

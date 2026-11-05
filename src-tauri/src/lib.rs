@@ -32,6 +32,7 @@ pub fn run() {
             }
             if let Some(window) = app.get_webview_window("main") {
                 use tauri::WindowEvent;
+                canaima_titlebar::setup_default(&window);
                 let close_started = Arc::new(AtomicBool::new(false));
                 let close_ready = Arc::new(AtomicBool::new(false));
                 let window_to_close = window.clone();
