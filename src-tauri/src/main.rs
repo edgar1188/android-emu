@@ -4,6 +4,7 @@
 mod gpu;
 
 fn main() {
+    canaima_gpu::apply_workarounds();
     gpu::setup_workarounds();
     canaima_android_emu_lib::run()
 }
