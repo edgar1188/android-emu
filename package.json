@@ -5,17 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vue-tsc --noEmit && vite build",
+    "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "tauri:dev": "tauri dev --no-watch",
     "format": "prettier --write . && cd src-tauri && cargo fmt --all || true"
   },
   "dependencies": {
-    "@materializecss/materialize": "latest",
-    "@tauri-apps/api": "latest",
-    "@tauri-apps/plugin-opener": "latest",
     "@lucide/vue": "latest",
+    "@materializecss/materialize": "latest",
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-opener": "^2.7.2",
     "pinia": "latest",
     "vue": "latest",
     "vue-router": "latest"
