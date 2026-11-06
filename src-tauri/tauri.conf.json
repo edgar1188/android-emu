@@ -50,6 +50,7 @@
           "libayatana-appindicator3-1",
           "adb",
           "qemu-system",
+          "qemu-system-x86",
           "qemu-utils"
         ],
         "section": "utils",
