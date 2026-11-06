@@ -27,39 +27,39 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             {
                 if let Some(window) = app.get_webview_window("main") {
-                    titlebar::setup_gtk_headerbar(window);
-                }
-            }
-            if let Some(window) = app.get_webview_window("main") {
-                use tauri::WindowEvent;
-                canaima_titlebar::setup_default(&window);
-                let close_started = Arc::new(AtomicBool::new(false));
-                let close_ready = Arc::new(AtomicBool::new(false));
-                let window_to_close = window.clone();
-                window.on_window_event(move |event| {
-                    if let WindowEvent::CloseRequested { api, .. } = event {
-                        if close_ready.swap(false, Ordering::SeqCst) {
-                            return;
-                        }
-                        api.prevent_close();
-                        if close_started.swap(true, Ordering::SeqCst) {
-                            return;
-                        }
+                    titlebar::setup_gtk_headerbar(window.clone());
+                    use tauri::WindowEvent;
+                    canaima_titlebar::setup_default(&window);
+                    let close_started = Arc::new(AtomicBool::new(false));
+                    let close_ready = Arc::new(AtomicBool::new(false));
+                    let window_to_close = window.clone();
+                    window.on_window_event(move |event| {
+                        if let WindowEvent::CloseRequested { api, .. } = event {
+                            if close_ready.swap(false, Ordering::SeqCst) {
+                                return;
+                            }
+                            api.prevent_close();
+                            if close_started.swap(true, Ordering::SeqCst) {
+                                return;
+                            }
 
-                        let window = window_to_close.clone();
-                        let close_ready = Arc::clone(&close_ready);
-                        tauri::async_runtime::spawn(async move {
-                            if let Err(error) = emulator::shutdown_android_emulator().await {
-                                eprintln!("{error}");
-                            }
-                            close_ready.store(true, Ordering::SeqCst);
-                            if let Err(error) = window.close() {
-                                eprintln!("No se pudo cerrar la ventana de la aplicación: {error}");
-                                window.app_handle().exit(0);
-                            }
-                        });
-                    }
-                });
+                            let window = window_to_close.clone();
+                            let close_ready = Arc::clone(&close_ready);
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(error) = emulator::shutdown_android_emulator().await {
+                                    eprintln!("{error}");
+                                }
+                                close_ready.store(true, Ordering::SeqCst);
+                                if let Err(error) = window.close() {
+                                    eprintln!(
+                                        "No se pudo cerrar la ventana de la aplicación: {error}"
+                                    );
+                                    window.app_handle().exit(0);
+                                }
+                            });
+                        }
+                    });
+                }
             }
             Ok(())
         })
@@ -77,6 +77,7 @@ pub fn run() {
             adb::scrcpy_input_touch,
             adb::scrcpy_input_scroll,
             emulator::start_android_emulator,
+            canaima_titlebar::sync_theme,
             titlebar::sync_theme
         ])
         .run(tauri::generate_context!())

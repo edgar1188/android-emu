@@ -263,8 +263,8 @@ pub fn sync_theme(window: tauri::Window, is_dark: bool) {
                                         let _ = loader.close();
                                         if let Some(pixbuf) = loader.pixbuf() {
                                             if let Some(scaled) = pixbuf.scale_simple(
-                                                118,
-                                                20,
+                                                90,
+                                                15,
                                                 gtk::gdk_pixbuf::InterpType::Bilinear,
                                             ) {
                                                 image.set_from_pixbuf(Some(&scaled));
@@ -307,9 +307,9 @@ pub fn setup_gtk_headerbar(window: tauri::WebviewWindow) {
                 let _ = loader.write(CANAIMA_LOGO_SVG.as_bytes());
                 let _ = loader.close();
                 if let Some(pixbuf) = loader.pixbuf() {
-                    // Escalar a 118x20 para mantener la proporción de 197x33
+                    // Escalar el logo para mantener la proporción de 197x33
                     if let Some(scaled_pixbuf) =
-                        pixbuf.scale_simple(118, 20, gtk::gdk_pixbuf::InterpType::Bilinear)
+                        pixbuf.scale_simple(90, 15, gtk::gdk_pixbuf::InterpType::Bilinear)
                     {
                         let logo_image = gtk::Image::from_pixbuf(Some(&scaled_pixbuf));
                         logo_image.set_widget_name("canaima-logo");
@@ -321,7 +321,7 @@ pub fn setup_gtk_headerbar(window: tauri::WebviewWindow) {
             }
 
             // Set Buttons (Right)
-            let box_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let box_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 7);
             box_buttons.style_context().add_class("control-buttons-box");
             box_buttons.set_widget_name("canaima-buttons-box");
             box_buttons.set_margin_end(8);
@@ -422,21 +422,22 @@ pub fn setup_gtk_headerbar(window: tauri::WebviewWindow) {
                 }
                 
                 #canaima-headerbar {
-                    min-height: 40px;
+                    min-height: 32px;
                     background-image: none;
-                    background-color: #ececec;
-                    border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-                    padding: 0 12px;
+                    background-color: #f2f2f2;
+                    border-top: 1px solid #111719;
+                    border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+                    padding: 0 8px;
                 }
                 #canaima-headerbar.is-dark {
                     background-color: #121212;
+                    border-top: 1px solid #080a0b;
                     border-bottom: 1px solid #000000;
                 }
                 #canaima-title {
                     font-size: 13px;
-                    font-weight: 600;
-                    color: #333333;
-                    opacity: 0.9;
+                    font-weight: 400;
+                    color: #252525;
                     font-family: system-ui, -apple-system, sans-serif;
                 }
                 #canaima-headerbar.is-dark #canaima-title {
@@ -447,55 +448,55 @@ pub fn setup_gtk_headerbar(window: tauri::WebviewWindow) {
                 }
                 #canaima-headerbar button.control-btn {
                     border-radius: 9999px;
-                    min-width: 18px;
-                    min-height: 18px;
+                    min-width: 20px;
+                    min-height: 20px;
                     padding: 0;
                     margin: 0;
                     border: none;
                     background-image: none;
-                    box-shadow: inset 0 1px rgba(0, 0, 0, 0.1), 0 1px rgba(255, 255, 255, 0.1);
+                    box-shadow: none;
                 }
                 #canaima-headerbar button.control-btn image {
-                    color: transparent;
-                    opacity: 0;
-                    transition: all 0.2s ease;
-                }
-                #canaima-headerbar button.control-btn:hover image {
-                    color: white;
                     opacity: 1;
                 }
                 
                 /* Minimize */
                 #canaima-btn-min {
-                    background-color: #26c6da;
+                    background-color: #d6d6d6;
                 }
                 #canaima-headerbar.is-dark #canaima-btn-min {
-                    background-color: #1a8a99;
+                    background-color: #444444;
                 }
                 #canaima-btn-min:hover {
-                    background-color: #4dd0e1;
+                    background-color: #c4c4c4;
                 }
                 
                 /* Maximize */
                 #canaima-btn-max {
-                    background-color: #0284c7;
+                    background-color: #d6d6d6;
                 }
                 #canaima-headerbar.is-dark #canaima-btn-max {
-                    background-color: #016294;
+                    background-color: #444444;
                 }
                 #canaima-btn-max:hover {
-                    background-color: #039be5;
+                    background-color: #c4c4c4;
                 }
                 
                 /* Close */
                 #canaima-btn-close {
-                    background-color: #ef4444;
+                    background-color: #08729f;
                 }
                 #canaima-headerbar.is-dark #canaima-btn-close {
-                    background-color: #b91c1c;
+                    background-color: #075879;
                 }
                 #canaima-btn-close:hover {
-                    background-color: #f87171;
+                    background-color: #08648b;
+                }
+                #canaima-headerbar button.control-btn image {
+                    color: #383838;
+                }
+                #canaima-headerbar button.btn-close image {
+                    color: #ffffff;
                 }
             ";
 
