@@ -38,6 +38,13 @@ const isStatusDismissed = ref(false)
 const isErrorDismissed = ref(false)
 const isDownloadingImage = ref(false)
 const imageDownloadPercentage = ref<number | null>(null)
+const totalMemoryMb = ref(0)
+const maxMemoryMb = ref(2048)
+const memoryMb = ref(2048)
+const memoryDraftMb = ref(2048)
+const isMemoryConfigLoaded = ref(false)
+const isEmulatorReady = ref(false)
+const isMemoryRestarting = ref(false)
 const fps = ref(0)
 const showHardwareControls = ref(false)
 type HardwareControlsPosition = 'left' | 'right' | 'top' | 'bottom'
@@ -70,6 +77,18 @@ let fpsWindowStartedAt = performance.now()
 let statusDismissTimer: ReturnType<typeof setTimeout> | undefined
 let errorDismissTimer: ReturnType<typeof setTimeout> | undefined
 let dismissableTime = 10000
+
+interface EmulatorMemoryConfig {
+  total_memory_mb: number
+  max_memory_mb: number
+  memory_mb: number
+}
+
+function formatMemory(memoryMbValue: number) {
+  const formatted = new Intl.NumberFormat('es', { maximumFractionDigits: 2 })
+    .format(memoryMbValue / 1024)
+  return `${formatted} GB`
+}
 
 watch(() => appStore.isDarkMode, (isDark) => {
   queueInput('adb_set_dark_mode', { isDark })
@@ -443,6 +462,43 @@ function onPointerCancel() {
   releaseInputs()
 }
 
+async function applyMemoryConfiguration() {
+  if (memoryDraftMb.value === memoryMb.value || isMemoryRestarting.value) return
+  const confirmed = window.confirm(
+    `Para asignar ${formatMemory(memoryDraftMb.value)} de RAM, se apagará y reiniciará la máquina virtual. ` +
+    'La configuración se conservará para los próximos inicios. ¿Deseas continuar?',
+  )
+  if (!confirmed) {
+    memoryDraftMb.value = memoryMb.value
+    return
+  }
+
+  isMemoryRestarting.value = true
+  emulatorError.value = ''
+  emulatorStatus.value = 'Apagando Android para aplicar la nueva memoria...'
+  try {
+    const status = await invoke<string>('restart_android_emulator', {
+      memoryMb: memoryDraftMb.value,
+    })
+    memoryMb.value = memoryDraftMb.value
+    emulatorStatus.value = status
+    emulatorError.value = ''
+  } catch (error) {
+    emulatorStatus.value = 'No se pudo reiniciar el emulador con la nueva memoria.'
+    emulatorError.value = String(error)
+    try {
+      const memoryConfig = await invoke<EmulatorMemoryConfig>('get_emulator_memory_config')
+      maxMemoryMb.value = memoryConfig.max_memory_mb
+      memoryMb.value = memoryConfig.memory_mb
+      memoryDraftMb.value = memoryConfig.memory_mb
+    } catch (configError) {
+      emulatorError.value += `\nNo se pudo volver a consultar la RAM configurada: ${String(configError)}`
+    }
+  } finally {
+    isMemoryRestarting.value = false
+  }
+}
+
 async function startAndroidEmulator() {
   if (!(window as any).__TAURI_INTERNALS__) {
     emulatorStatus.value = ''
@@ -450,6 +506,12 @@ async function startAndroidEmulator() {
   }
 
   try {
+    const memoryConfig = await invoke<EmulatorMemoryConfig>('get_emulator_memory_config')
+    totalMemoryMb.value = memoryConfig.total_memory_mb
+    maxMemoryMb.value = memoryConfig.max_memory_mb
+    memoryMb.value = memoryConfig.memory_mb
+    memoryDraftMb.value = memoryConfig.memory_mb
+    isMemoryConfigLoaded.value = true
     unlistenDownloadProgress = await listen<{ percentage: number | null }>(
       'emulator-download-progress',
       (event) => {
@@ -464,6 +526,7 @@ async function startAndroidEmulator() {
     const startupStatus = await invoke<string>('start_android_emulator')
     if (!isAndroidConnected.value) emulatorStatus.value = startupStatus
     emulatorError.value = ''
+    isEmulatorReady.value = true
   } catch (error) {
     emulatorStatus.value = 'No se pudo iniciar el emulador.'
     emulatorError.value = String(error)
@@ -616,6 +679,25 @@ onUnmounted(() => {
             <div v-if="showHardwareControls" id="android-hardware-controls" class="hardware-controls"
               :class="`hardware-controls-${hardwareControlsPosition}`" role="group"
               aria-label="Controles físicos de Android">
+              <div class="ram-controls" role="group" aria-label="Memoria de la máquina virtual">
+                <label for="emulator-memory">
+                  RAM de la máquina virtual
+                  <strong>{{ formatMemory(memoryDraftMb) }}</strong>
+                </label>
+                <input id="emulator-memory" v-model.number="memoryDraftMb" type="range" min="2048"
+                  :max="maxMemoryMb" step="1"
+                  :disabled="!isMemoryConfigLoaded || isMemoryRestarting"
+                  :aria-valuetext="`${formatMemory(memoryDraftMb)} de RAM`" />
+                <small>
+                  Mínimo 2 GB · Máximo {{ formatMemory(maxMemoryMb) }}
+                  (60 % de {{ formatMemory(totalMemoryMb) }} del equipo)
+                </small>
+                <button class="ram-apply" type="button"
+                  :disabled="!isEmulatorReady || isMemoryRestarting || memoryDraftMb === memoryMb"
+                  @click="applyMemoryConfiguration">
+                  {{ isMemoryRestarting ? 'Reiniciando…' : 'Aplicar y reiniciar' }}
+                </button>
+              </div>
               <div class="hardware-position" role="group" aria-label="Elegir posición de los botones">
                 <button class="position-arrow" :class="{ 'position-arrow-active': hardwareControlsPosition === 'top' }"
                   type="button" aria-label="Colocar arriba" title="Colocar arriba"
@@ -1038,6 +1120,62 @@ h1 {
   flex-direction: row;
 }
 
+.ram-controls {
+  display: flex;
+  width: min(17rem, calc(100vw - 5rem));
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.75rem;
+  border: 1px solid rgb(255 255 255 / 22%);
+  border-radius: 0.75rem;
+  background: rgb(12 22 27 / 90%);
+  color: #f1f7f8;
+  font-size: 0.75rem;
+  backdrop-filter: blur(8px);
+}
+
+.ram-controls label {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: inherit;
+}
+
+.ram-controls input {
+  width: 100%;
+  margin: 0.25rem 0;
+  accent-color: var(--canaima-primary);
+}
+
+.ram-controls small {
+  color: inherit;
+  font-size: 0.68rem;
+  line-height: 1.4;
+}
+
+.ram-apply {
+  min-height: 2rem;
+  padding: 0.35rem 0.55rem;
+  border: 1px solid rgb(255 255 255 / 22%);
+  border-radius: 0.45rem;
+  background: var(--canaima-primary);
+  color: #fff;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.ram-apply:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.ram-apply:focus-visible,
+.ram-controls input:focus-visible {
+  outline: 2px solid var(--canaima-primary);
+  outline-offset: 2px;
+}
+
 .hardware-toggle {
   position: absolute;
   z-index: 4;
@@ -1105,6 +1243,12 @@ html:not(.dark) & .hardware-toggle,
 html:not(.dark) & .hardware-position {
   border-color: rgb(255 255 255 / 82%);
   background: rgb(239 246 248 / 94%);
+  color: #263b43;
+}
+
+html:not(.dark) & .ram-controls {
+  border-color: rgb(255 255 255 / 82%);
+  background: rgb(239 246 248 / 96%);
   color: #263b43;
 }
 

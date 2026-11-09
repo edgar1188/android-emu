@@ -17,10 +17,18 @@ const IMAGE_FILE_NAME: &str = "android.qcow2";
 const IMAGE_URL_ENV: &str = "ANDROID_QCOW2_URL";
 const DEFAULT_IMAGE_URL: &str = "http://localhost:8888/android.qcow2";
 const IMAGE_PROGRESS_EVENT: &str = "emulator-download-progress";
+const DEFAULT_MEMORY_MB: u64 = 2048;
 
 #[derive(Clone, Serialize)]
 struct DownloadProgress {
     percentage: Option<u8>,
+}
+
+#[derive(Serialize)]
+pub struct EmulatorMemoryConfig {
+    total_memory_mb: u64,
+    max_memory_mb: u64,
+    memory_mb: u64,
 }
 
 pub struct EmulatorAppState {
@@ -45,6 +53,86 @@ fn config_image_path() -> Result<PathBuf, String> {
     Ok(config_home
         .join("canaima-android-emu")
         .join(IMAGE_FILE_NAME))
+}
+
+fn memory_config_path() -> Result<PathBuf, String> {
+    let image_path = config_image_path()?;
+    let config_dir = image_path
+        .parent()
+        .ok_or_else(|| "No se pudo determinar el directorio de configuración.".to_string())?;
+    Ok(config_dir.join("memory_mb"))
+}
+
+fn memory_limits() -> Result<(u64, u64), String> {
+    let meminfo = fs::read_to_string("/proc/meminfo")
+        .map_err(|error| format!("No se pudo consultar la RAM total del equipo: {error}"))?;
+    let total_memory_kb = meminfo
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            if name != "MemTotal" {
+                return None;
+            }
+            value.split_whitespace().next()?.parse::<u64>().ok()
+        })
+        .ok_or_else(|| "No se pudo leer la RAM total del equipo.".to_string())?;
+    let total_memory_mb = total_memory_kb / 1024;
+    let max_memory_mb = total_memory_kb.saturating_mul(60) / 100 / 1024;
+    if max_memory_mb < DEFAULT_MEMORY_MB {
+        return Err(
+            "El equipo no dispone de RAM suficiente para asignar el mínimo de 2 GB respetando el límite del 60 %."
+                .to_string(),
+        );
+    }
+    Ok((total_memory_mb, max_memory_mb))
+}
+
+fn save_memory_mb(memory_mb: u64) -> Result<(), String> {
+    let path = memory_config_path()?;
+    let config_dir = path
+        .parent()
+        .ok_or_else(|| "No se pudo determinar el directorio de configuración.".to_string())?;
+    fs::create_dir_all(config_dir)
+        .map_err(|error| format!("No se pudo crear {}: {error}", config_dir.display()))?;
+    fs::write(&path, memory_mb.to_string())
+        .map_err(|error| format!("No se pudo guardar la configuración de RAM: {error}"))
+}
+
+fn load_memory_config() -> Result<EmulatorMemoryConfig, String> {
+    let (total_memory_mb, max_memory_mb) = memory_limits()?;
+    let path = memory_config_path()?;
+    let saved_memory = match fs::read_to_string(&path) {
+        Ok(value) => Some(value.trim().parse::<u64>().map_err(|error| {
+            format!(
+                "La configuración de RAM {} no es válida: {error}",
+                path.display()
+            )
+        })?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "No se pudo leer la configuración de RAM {}: {error}",
+                path.display()
+            ))
+        }
+    };
+    let memory_mb = saved_memory
+        .unwrap_or(DEFAULT_MEMORY_MB)
+        .clamp(DEFAULT_MEMORY_MB, max_memory_mb);
+    if saved_memory != Some(memory_mb) {
+        save_memory_mb(memory_mb)?;
+    }
+
+    Ok(EmulatorMemoryConfig {
+        total_memory_mb,
+        max_memory_mb,
+        memory_mb,
+    })
+}
+
+#[tauri::command]
+pub fn get_emulator_memory_config() -> Result<EmulatorMemoryConfig, String> {
+    load_memory_config()
 }
 
 fn validate_image(path: &Path) -> Result<(), String> {
@@ -226,6 +314,41 @@ fn qemu_is_running(pid_file: &Path, image_path: &Path) -> Result<bool, String> {
     Ok(false)
 }
 
+async fn stop_qemu_process(pid_file: &Path, image_path: &Path) -> Result<(), String> {
+    if !qemu_is_running(pid_file, image_path)? {
+        return Ok(());
+    }
+
+    let pid = fs::read_to_string(pid_file)
+        .map_err(|error| format!("No se pudo leer el PID de QEMU: {error}"))?
+        .trim()
+        .parse::<u32>()
+        .map_err(|error| format!("El PID de QEMU no es válido: {error}"))?;
+    if !qemu_is_running(pid_file, image_path)? {
+        return Ok(());
+    }
+    let output = Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .output()
+        .await
+        .map_err(|error| format!("No se pudo detener QEMU: {error}"))?;
+    if !output.status.success() && qemu_is_running(pid_file, image_path)? {
+        let details = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("No se pudo detener QEMU: {details}"));
+    }
+
+    timeout(Duration::from_secs(15), async {
+        loop {
+            if !qemu_is_running(pid_file, image_path)? {
+                return Ok(());
+            }
+            sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .map_err(|_| "QEMU no se detuvo dentro del tiempo esperado.".to_string())?
+}
+
 async fn emulator_port_is_listening() -> bool {
     timeout(
         Duration::from_millis(500),
@@ -306,16 +429,93 @@ async fn wait_for_adb_connection() -> Result<(), String> {
     }
 }
 
+async fn wait_for_android_shutdown() -> Result<(), String> {
+    timeout(Duration::from_secs(30), async {
+        loop {
+            let output = Command::new(crate::adb::adb_executable()?)
+                .args(["-s", "127.0.0.1:5555", "get-state"])
+                .output()
+                .await
+                .map_err(|error| format!("No se pudo comprobar el apagado de Android: {error}"))?;
+            if output.status.success() {
+                if String::from_utf8_lossy(&output.stdout).trim() != "device" {
+                    return Ok(());
+                }
+            } else {
+                let details = format!(
+                    "{} {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                )
+                .to_lowercase();
+                if details.contains("offline")
+                    || details.contains("no devices/emulators found")
+                    || details.contains("device not found")
+                {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "No se pudo comprobar el apagado de Android: {}",
+                    details.trim()
+                ));
+            }
+            sleep(Duration::from_secs(1)).await;
+        }
+    })
+    .await
+    .map_err(|_| "Android no terminó de apagarse dentro del tiempo esperado.".to_string())?
+}
+
 #[tauri::command]
 pub async fn start_android_emulator(
     app: AppHandle,
     state: State<'_, EmulatorAppState>,
 ) -> Result<String, String> {
     let mut started = state.started.lock().await;
+    start_android_emulator_locked(&app, &mut started).await
+}
+
+#[tauri::command]
+pub async fn restart_android_emulator(
+    memory_mb: u64,
+    app: AppHandle,
+    state: State<'_, EmulatorAppState>,
+) -> Result<String, String> {
+    let mut started = state.started.lock().await;
+    let (_, max_memory_mb) = memory_limits()?;
+    if !(DEFAULT_MEMORY_MB..=max_memory_mb).contains(&memory_mb) {
+        return Err(format!(
+            "La RAM debe estar entre 2 GB y {} MB.",
+            max_memory_mb
+        ));
+    }
+
+    shutdown_android_emulator().await?;
+    wait_for_android_shutdown().await?;
+
+    let image_path = config_image_path()?;
+    let pid_file = image_path
+        .parent()
+        .ok_or_else(|| "No se pudo determinar el directorio de configuración.".to_string())?
+        .join("qemu.pid");
+    if image_path.exists() {
+        stop_qemu_process(&pid_file, &image_path).await?;
+    }
+
+    save_memory_mb(memory_mb)?;
+    *started = false;
+    start_android_emulator_locked(&app, &mut started).await
+}
+
+async fn start_android_emulator_locked(
+    app: &AppHandle,
+    started: &mut bool,
+) -> Result<String, String> {
     if *started {
         return Ok("El emulador ya se inició en esta sesión.".to_string());
     }
 
+    let memory = load_memory_config()?;
     let qemu_status = if emulator_port_is_listening().await {
         "Sesión QEMU existente reutilizada en el puerto 5555.".to_string()
     } else {
@@ -342,7 +542,7 @@ pub async fn start_android_emulator(
                     "-cpu",
                     "host",
                     "-m",
-                    "2G",
+                    &format!("{}M", memory.memory_mb),
                     "--enable-kvm",
                     "-boot",
                     "cd",

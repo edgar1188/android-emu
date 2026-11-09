@@ -76,6 +76,8 @@ pub fn run() {
             adb::scrcpy_input_key,
             adb::scrcpy_input_touch,
             adb::scrcpy_input_scroll,
+            emulator::get_emulator_memory_config,
+            emulator::restart_android_emulator,
             emulator::start_android_emulator,
             canaima_titlebar::sync_theme,
             titlebar::sync_theme
