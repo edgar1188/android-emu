@@ -1143,18 +1143,42 @@ h1 {
 }
 
 .ram-controls {
+  position: absolute;
+  z-index: 5;
   display: flex;
-  width: min(17rem, calc(100vw - 5rem));
-  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: min(13rem, calc(100vw - 5rem));
   flex-direction: column;
-  gap: 0.45rem;
-  padding: 0.75rem;
+  gap: 0.35rem;
+  padding: 0.6rem 0.7rem;
   border: 1px solid rgb(255 255 255 / 22%);
-  border-radius: 0.75rem;
+  border-radius: 0.65rem;
   background: rgb(12 22 27 / 90%);
   color: #f1f7f8;
   font-size: 0.75rem;
   backdrop-filter: blur(8px);
+}
+
+.hardware-controls-left .ram-controls {
+  top: 0;
+  left: calc(100% + 0.5rem);
+}
+
+.hardware-controls-right .ram-controls {
+  top: 0;
+  right: calc(100% + 0.5rem);
+}
+
+.hardware-controls-top .ram-controls {
+  top: calc(100% + 0.5rem);
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.hardware-controls-bottom .ram-controls {
+  bottom: calc(100% + 0.5rem);
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 .ram-controls label {
@@ -1162,6 +1186,7 @@ h1 {
   justify-content: space-between;
   gap: 0.5rem;
   color: inherit;
+  font-size: 0.72rem;
 }
 
 .ram-controls input {
@@ -1172,13 +1197,13 @@ h1 {
 
 .ram-controls small {
   color: inherit;
-  font-size: 0.68rem;
+  font-size: 0.64rem;
   line-height: 1.4;
 }
 
 .ram-apply {
-  min-height: 2rem;
-  padding: 0.35rem 0.55rem;
+  min-height: 1.8rem;
+  padding: 0.3rem 0.5rem;
   border: 1px solid rgb(255 255 255 / 22%);
   border-radius: 0.45rem;
   background: var(--canaima-primary);
