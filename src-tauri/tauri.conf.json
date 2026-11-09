@@ -49,6 +49,7 @@
           "libgtk-3-0",
           "libayatana-appindicator3-1",
           "adb",
+          "curl",
           "qemu-system",
           "qemu-system-x86",
           "qemu-utils"
