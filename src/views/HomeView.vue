@@ -490,7 +490,7 @@ async function applyMemoryConfiguration() {
   showHardwareControls.value = false
   isMemoryRestarting.value = true
   emulatorError.value = ''
-  emulatorStatus.value = 'Reiniciando la máquina virtual y esperando la conexión...'
+  emulatorStatus.value = 'Reiniciando y esperando la conexión...'
   try {
     await invoke('adb_disconnect')
     const status = await invoke<string>('restart_android_emulator', {
@@ -706,9 +706,8 @@ onUnmounted(() => {
                   RAM de la máquina virtual
                   <strong>{{ formatMemory(memoryDraftMb) }}</strong>
                 </label>
-                <input id="emulator-memory" v-model.number="memoryDraftMb" type="range" min="2048"
-                  :max="maxMemoryMb" step="1"
-                  :disabled="!isMemoryConfigLoaded || isMemoryRestarting"
+                <input id="emulator-memory" v-model.number="memoryDraftMb" type="range" min="2048" :max="maxMemoryMb"
+                  step="1" :disabled="!isMemoryConfigLoaded || isMemoryRestarting"
                   :aria-valuetext="`${formatMemory(memoryDraftMb)} de RAM`" />
                 <small>
                   Mínimo 2 GB · Máximo {{ formatMemory(maxMemoryMb) }}
