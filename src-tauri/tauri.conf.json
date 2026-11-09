@@ -52,7 +52,9 @@
           "curl",
           "qemu-system",
           "qemu-system-x86",
-          "qemu-utils"
+          "qemu-utils",
+          "libvirt-clients",
+          "libvirt-daemon-system"
         ],
         "section": "utils",
         "priority": "optional"
