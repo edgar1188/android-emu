@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { CheckCircle, RefreshCw, Smartphone, XCircle } from '@lucide/vue'
@@ -18,9 +18,13 @@ const errorMessage = ref('')
 let activeFrameChannel: Channel<ArrayBuffer> | undefined
 let unlistenVideoError: (() => void) | undefined
 let stopAutoConnect = false
+let connectionLoop: Promise<void> | undefined
 const emit = defineEmits<{
   frame: [frame: ArrayBuffer]
   connected: []
+}>()
+const props = defineProps<{
+  reconnectKey?: number
 }>()
 
 async function refreshDevices(): Promise<boolean> {
@@ -101,15 +105,35 @@ async function connectDevice(): Promise<boolean> {
   }
 }
 
-async function waitForDeviceAndConnect() {
-  while (!stopAutoConnect) {
-    const deviceAvailable = await refreshDevices()
-    if (deviceAvailable && await connectDevice()) {
-      return
+function waitForDeviceAndConnect(): Promise<void> {
+  if (connectionLoop) return connectionLoop
+
+  connectionLoop = (async () => {
+    while (!stopAutoConnect) {
+      const deviceAvailable = await refreshDevices()
+      if (deviceAvailable && await connectDevice()) {
+        return
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000))
     }
-    await new Promise((resolve) => setTimeout(resolve, 2000))
-  }
+  })().finally(() => {
+    connectionLoop = undefined
+  })
+  return connectionLoop
 }
+
+watch(() => props.reconnectKey, (key, previousKey) => {
+  if (key === undefined || key === previousKey || stopAutoConnect) return
+  void (async () => {
+    try {
+      await invoke('adb_disconnect')
+      activeFrameChannel = undefined
+      await waitForDeviceAndConnect()
+    } catch (error) {
+      errorMessage.value = `No se pudo reconectar con Android: ${String(error)}`
+    }
+  })()
+})
 
 onMounted(() => {
   void listen<string>('adb-video-error', (event) => {

@@ -45,6 +45,7 @@ const memoryDraftMb = ref(2048)
 const isMemoryConfigLoaded = ref(false)
 const isEmulatorReady = ref(false)
 const isMemoryRestarting = ref(false)
+const adbReconnectKey = ref(0)
 const fps = ref(0)
 const showHardwareControls = ref(false)
 type HardwareControlsPosition = 'left' | 'right' | 'top' | 'bottom'
@@ -371,6 +372,8 @@ function ensureSourceFrameCanvas(width: number, height: number) {
 }
 
 async function updateFrame(rawFrame: ArrayBuffer | Uint8Array) {
+  if (isMemoryRestarting.value) return
+
   const buffer = rawFrame instanceof ArrayBuffer
     ? rawFrame
     : rawFrame.buffer.slice(rawFrame.byteOffset, rawFrame.byteOffset + rawFrame.byteLength)
@@ -379,6 +382,7 @@ async function updateFrame(rawFrame: ArrayBuffer | Uint8Array) {
   const isPngFrame = bytes.length > 8 && bytes.slice(0, 8).every((value, index) => pngSignature[index] === value)
 
   if (isPngFrame) {
+    const receivedFrameRevision = frameRevision
     try {
       const blob = new Blob([new Uint8Array(bytes).buffer], { type: 'image/png' })
       const objectUrl = URL.createObjectURL(blob)
@@ -388,6 +392,11 @@ async function updateFrame(rawFrame: ArrayBuffer | Uint8Array) {
         img.onerror = () => reject(new Error('No se pudo cargar la imagen PNG de ADB'))
         img.src = objectUrl
       })
+
+      if (isMemoryRestarting.value || receivedFrameRevision !== frameRevision) {
+        URL.revokeObjectURL(objectUrl)
+        return
+      }
 
       const nextSize = { width: image.width, height: image.height }
       const revision = ++frameRevision
@@ -473,16 +482,25 @@ async function applyMemoryConfiguration() {
     return
   }
 
+  releaseInputs()
+  frameRevision += 1
+  frameSize.value = { width: 0, height: 0 }
+  isAndroidConnected.value = false
+  isEmulatorReady.value = false
+  showHardwareControls.value = false
   isMemoryRestarting.value = true
   emulatorError.value = ''
-  emulatorStatus.value = 'Apagando Android para aplicar la nueva memoria...'
+  emulatorStatus.value = 'Reiniciando la máquina virtual y esperando la conexión...'
   try {
+    await invoke('adb_disconnect')
     const status = await invoke<string>('restart_android_emulator', {
       memoryMb: memoryDraftMb.value,
     })
     memoryMb.value = memoryDraftMb.value
     emulatorStatus.value = status
     emulatorError.value = ''
+    isEmulatorReady.value = true
+    adbReconnectKey.value += 1
   } catch (error) {
     emulatorStatus.value = 'No se pudo reiniciar el emulador con la nueva memoria.'
     emulatorError.value = String(error)
@@ -649,8 +667,12 @@ onUnmounted(() => {
 
           <div v-if="!frameSize.width" class="display-placeholder">
             <Activity :size="34" />
-            <strong>Esperando conexión</strong>
-            <span>La aplicación se conectará automáticamente cuando Android termine de iniciar.</span>
+            <strong>{{ isMemoryRestarting ? 'Reiniciando Android' : 'Esperando conexión' }}</strong>
+            <span>
+              {{ isMemoryRestarting
+                ? 'La pantalla volverá a mostrarse cuando Android termine de reiniciar.'
+                : 'La aplicación se conectará automáticamente cuando Android termine de iniciar.' }}
+            </span>
           </div>
           <div v-else class="display-shell">
             <div ref="displayFrame" class="display-frame" tabindex="0" aria-label="Pantalla interactiva de Android"
@@ -774,7 +796,7 @@ onUnmounted(() => {
         </section>
 
         <aside class="control-column" style="display:none">
-          <AdbConnection @frame="updateFrame" @connected="onAdbConnected" />
+          <AdbConnection :reconnect-key="adbReconnectKey" @frame="updateFrame" @connected="onAdbConnected" />
         </aside>
       </div>
     </main>
