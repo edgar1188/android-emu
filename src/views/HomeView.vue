@@ -808,7 +808,8 @@ onUnmounted(() => {
     </main>
 
     <Transition name="memory-modal">
-      <div v-if="isMemoryConfirmationOpen" class="memory-modal-backdrop" @click.self="cancelMemoryConfiguration">
+      <div v-if="isMemoryConfirmationOpen" class="memory-modal-backdrop"
+        :class="{ 'memory-modal-backdrop-dark': appStore.isDarkMode }" @click.self="cancelMemoryConfiguration">
         <section class="memory-modal" role="dialog" aria-modal="true" aria-labelledby="memory-modal-title"
           aria-describedby="memory-modal-description" @keydown.esc.stop.prevent="cancelMemoryConfiguration">
           <div class="memory-modal-heading">
@@ -1668,46 +1669,54 @@ html.dark & .display-placeholder {
   background: #0b1216;
 }
 
-html.dark & .memory-modal {
-  border-color: #34444a;
-  background: var(--canaima-surface-dark);
+.memory-modal-backdrop-dark {
+  background: rgb(0 0 0 / 76%);
+}
+
+.memory-modal-backdrop-dark .memory-modal {
+  border-color: #080a0b;
+  background: #121212;
   color: var(--canaima-text-light);
 }
 
-html.dark & .memory-modal h2 {
+.memory-modal-backdrop-dark .memory-modal h2 {
   color: var(--canaima-text-light);
 }
 
-html.dark & .memory-modal p {
+.memory-modal-backdrop-dark .memory-modal p {
   color: #a9bdc3;
 }
 
-html.dark & .memory-modal-icon {
-  background: rgb(11 103 147 / 22%);
-  color: #77c4e6;
+.memory-modal-backdrop-dark .memory-modal-icon {
+  background: #252525;
+  color: #8aa6b2;
 }
 
-html.dark & .memory-modal-close {
+.memory-modal-backdrop-dark .memory-modal-close {
   color: #a9bdc3;
 }
 
-html.dark & .memory-modal-close:hover {
-  background: #2a383e;
+.memory-modal-backdrop-dark .memory-modal-close:hover {
+  background: #2a2a2a;
   color: var(--canaima-text-light);
 }
 
-html.dark & .memory-modal-cancel {
-  border-color: #45575e;
-  background: #263238;
+.memory-modal-backdrop-dark .memory-modal-cancel {
+  border-color: #444444;
+  background: #2a2a2a;
   color: var(--canaima-text-light);
 }
 
-html.dark & .memory-modal-cancel:hover {
-  background: #34444a;
+.memory-modal-backdrop-dark .memory-modal-cancel:hover {
+  background: #444444;
 }
 
-html.dark & .memory-modal-confirm {
-  background: #0b6793;
+.memory-modal-backdrop-dark .memory-modal-confirm {
+  background: #075879;
+}
+
+.memory-modal-backdrop-dark .memory-modal-confirm:hover {
+  background: #08648b;
 }
 
 html.dark & .session-state {
