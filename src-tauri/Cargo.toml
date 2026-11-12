@@ -1,10 +1,10 @@
 [package]
-name = "canaima_android_emu"
-version = "8.4.0"
+name = "emulador-android-canaima"
+version = "9.0.0+can"
 description = "Una aplicación de escritorio Canaima"
 authors = ["you"]
 edition = "2021"
-default-run = "canaima_android_emu"
+default-run = "emulador-android-canaima"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

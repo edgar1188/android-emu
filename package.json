@@ -1,7 +1,7 @@
 {
-  "name": "canaima-android-emu",
+  "name": "Emulador de Android Canaima",
   "private": true,
-  "version": "8.4.0",
+  "version": "9.0.0+can",
   "type": "module",
   "scripts": {
     "dev": "vite",
