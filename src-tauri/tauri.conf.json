@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Emulador Android Canaima",
+  "productName": "emulador-android-canaima",
   "version": "9.0.0+can2",
   "identifier": "emulador-android.app.canaima",
   "build": {
@@ -44,6 +44,7 @@
     ],
     "linux": {
       "deb": {
+        "desktopTemplate": "custom.desktop",
         "depends": [
           "libwebkit2gtk-4.1-0 | libwebkit2gtk-4.0-37",
           "libgtk-3-0",

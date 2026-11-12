@@ -1,0 +1,9 @@
+[Desktop Entry]
+Categories=Utility;
+Comment={{comment}}
+Exec={{exec}}
+Icon={{icon}}
+StartupWMClass={{icon}}
+Name=Emulador Android Canaima
+Terminal=false
+Type=Application
