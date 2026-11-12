@@ -1,7 +1,7 @@
 [package]
 name = "emulador-android-canaima"
-version = "9.0.0+can"
-description = "Una aplicación de escritorio Canaima"
+version = "9.0.0+can2"
+description = "Emulador de android para canaima"
 authors = ["you"]
 edition = "2021"
 default-run = "emulador-android-canaima"

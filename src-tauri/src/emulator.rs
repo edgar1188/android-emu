@@ -15,7 +15,7 @@ use tokio::{
 
 const IMAGE_FILE_NAME: &str = "android.qcow2";
 const IMAGE_URL_ENV: &str = "ANDROID_QCOW2_URL";
-const DEFAULT_IMAGE_URL: &str = "http://localhost:8888/android.qcow2";
+const DEFAULT_IMAGE_URL: &str = "https://descargas.softwarelibre.gob.ve/aplicaciones/recursos/emulador-android-canaima/image/android.qcow2";
 const IMAGE_PROGRESS_EVENT: &str = "emulator-download-progress";
 const DEFAULT_MEMORY_MB: u64 = 2048;
 
