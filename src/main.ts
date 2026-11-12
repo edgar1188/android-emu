@@ -8,6 +8,10 @@ import '@materializecss/materialize'
 
 import './css/style.css'
 
+if (import.meta.env.PROD) {
+  document.addEventListener('contextmenu', (event) => event.preventDefault(), true)
+}
+
 const hasTauriWindow = typeof window !== 'undefined' && Boolean((window as any).__TAURI_INTERNALS__)
 
 if (hasTauriWindow) {
