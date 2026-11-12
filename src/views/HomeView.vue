@@ -45,6 +45,8 @@ const memoryDraftMb = ref(2048)
 const isMemoryConfigLoaded = ref(false)
 const isEmulatorReady = ref(false)
 const isMemoryRestarting = ref(false)
+const isMemoryConfirmationOpen = ref(false)
+const cancelMemoryButton = ref<HTMLButtonElement | null>(null)
 const adbReconnectKey = ref(0)
 const fps = ref(0)
 const showHardwareControls = ref(false)
@@ -471,16 +473,21 @@ function onPointerCancel() {
   releaseInputs()
 }
 
-async function applyMemoryConfiguration() {
+async function openMemoryConfirmation() {
   if (memoryDraftMb.value === memoryMb.value || isMemoryRestarting.value) return
-  const confirmed = window.confirm(
-    `Para asignar ${formatMemory(memoryDraftMb.value)} de RAM, se apagará y reiniciará la máquina virtual. ` +
-    'La configuración se conservará para los próximos inicios. ¿Deseas continuar?',
-  )
-  if (!confirmed) {
-    memoryDraftMb.value = memoryMb.value
-    return
-  }
+  isMemoryConfirmationOpen.value = true
+  await nextTick()
+  cancelMemoryButton.value?.focus()
+}
+
+function cancelMemoryConfiguration() {
+  isMemoryConfirmationOpen.value = false
+  memoryDraftMb.value = memoryMb.value
+}
+
+async function applyMemoryConfiguration() {
+  if (!isMemoryConfirmationOpen.value || isMemoryRestarting.value) return
+  isMemoryConfirmationOpen.value = false
 
   releaseInputs()
   frameRevision += 1
@@ -715,7 +722,7 @@ onUnmounted(() => {
                 </small>
                 <button class="ram-apply" type="button"
                   :disabled="!isEmulatorReady || isMemoryRestarting || memoryDraftMb === memoryMb"
-                  @click="applyMemoryConfiguration">
+                  @click="openMemoryConfirmation">
                   {{ isMemoryRestarting ? 'Reiniciando…' : 'Aplicar y reiniciar' }}
                 </button>
               </div>
@@ -799,6 +806,37 @@ onUnmounted(() => {
         </aside>
       </div>
     </main>
+
+    <Transition name="memory-modal">
+      <div v-if="isMemoryConfirmationOpen" class="memory-modal-backdrop" @click.self="cancelMemoryConfiguration">
+        <section class="memory-modal" role="dialog" aria-modal="true" aria-labelledby="memory-modal-title"
+          aria-describedby="memory-modal-description" @keydown.esc.stop.prevent="cancelMemoryConfiguration">
+          <div class="memory-modal-heading">
+            <span class="memory-modal-icon" aria-hidden="true">
+              <Activity :size="21" />
+            </span>
+            <button class="memory-modal-close" type="button" aria-label="Cancelar cambio de RAM"
+              @click="cancelMemoryConfiguration">
+              <X :size="19" aria-hidden="true" />
+            </button>
+          </div>
+          <h2 id="memory-modal-title">Reiniciar para cambiar la RAM</h2>
+          <p id="memory-modal-description">
+            Para asignar <strong>{{ formatMemory(memoryDraftMb) }}</strong>, se apagará y reiniciará la máquina virtual.
+            La configuración se conservará para los próximos inicios.
+          </p>
+          <div class="memory-modal-actions">
+            <button ref="cancelMemoryButton" class="memory-modal-button memory-modal-cancel" type="button"
+              @click="cancelMemoryConfiguration">
+              Cancelar
+            </button>
+            <button class="memory-modal-button memory-modal-confirm" type="button" @click="applyMemoryConfiguration">
+              Aplicar y reiniciar
+            </button>
+          </div>
+        </section>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -1222,6 +1260,141 @@ h1 {
   outline-offset: 2px;
 }
 
+.memory-modal-backdrop {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background: rgb(8 20 25 / 58%);
+  backdrop-filter: blur(3px);
+}
+
+.memory-modal {
+  width: min(100%, 28rem);
+  padding: 1.5rem;
+  border: 1px solid #dce5e9;
+  border-radius: 1rem;
+  background: var(--canaima-surface-light);
+  color: var(--canaima-text-dark);
+  box-shadow: 0 1.25rem 3.5rem rgb(0 0 0 / 24%);
+}
+
+.memory-modal-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.memory-modal-icon {
+  display: inline-grid;
+  width: 2.75rem;
+  height: 2.75rem;
+  place-items: center;
+  border-radius: 0.8rem;
+  background: #e7f3f8;
+  color: var(--canaima-primary);
+}
+
+.memory-modal-close {
+  display: inline-grid;
+  width: 2.25rem;
+  height: 2.25rem;
+  place-items: center;
+  border: 0;
+  border-radius: 0.6rem;
+  background: transparent;
+  color: #71858c;
+  cursor: pointer;
+}
+
+.memory-modal-close:hover {
+  background: #edf2f4;
+  color: var(--canaima-text-dark);
+}
+
+.memory-modal h2 {
+  margin: 1.15rem 0 0.5rem;
+  color: var(--canaima-text-dark);
+  font-size: 1.2rem;
+  line-height: 1.35;
+}
+
+.memory-modal p {
+  margin: 0;
+  color: #60737a;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.memory-modal p strong {
+  color: var(--canaima-primary);
+}
+
+.memory-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  margin-top: 1.5rem;
+}
+
+.memory-modal-button {
+  min-height: 2.5rem;
+  padding: 0.55rem 0.9rem;
+  border: 1px solid transparent;
+  border-radius: 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.memory-modal-cancel {
+  border-color: #d7e0e4;
+  background: var(--canaima-surface-light);
+  color: var(--canaima-text-dark);
+}
+
+.memory-modal-cancel:hover {
+  background: #f0f4f6;
+}
+
+.memory-modal-confirm {
+  background: var(--canaima-primary);
+  color: #fff;
+}
+
+.memory-modal-confirm:hover {
+  background: var(--canaima-primary-hover);
+}
+
+.memory-modal-button:focus-visible,
+.memory-modal-close:focus-visible {
+  outline: 2px solid var(--canaima-primary);
+  outline-offset: 2px;
+}
+
+.memory-modal-enter-active,
+.memory-modal-leave-active {
+  transition: opacity 0.18s ease;
+}
+
+.memory-modal-enter-active .memory-modal,
+.memory-modal-leave-active .memory-modal {
+  transition: transform 0.18s ease;
+}
+
+.memory-modal-enter-from,
+.memory-modal-leave-to {
+  opacity: 0;
+}
+
+.memory-modal-enter-from .memory-modal,
+.memory-modal-leave-to .memory-modal {
+  transform: translateY(0.5rem) scale(0.98);
+}
+
 .hardware-toggle {
   position: absolute;
   z-index: 4;
@@ -1493,6 +1666,48 @@ html.dark & .panel-heading {
 
 html.dark & .display-placeholder {
   background: #0b1216;
+}
+
+html.dark & .memory-modal {
+  border-color: #34444a;
+  background: var(--canaima-surface-dark);
+  color: var(--canaima-text-light);
+}
+
+html.dark & .memory-modal h2 {
+  color: var(--canaima-text-light);
+}
+
+html.dark & .memory-modal p {
+  color: #a9bdc3;
+}
+
+html.dark & .memory-modal-icon {
+  background: rgb(11 103 147 / 22%);
+  color: #77c4e6;
+}
+
+html.dark & .memory-modal-close {
+  color: #a9bdc3;
+}
+
+html.dark & .memory-modal-close:hover {
+  background: #2a383e;
+  color: var(--canaima-text-light);
+}
+
+html.dark & .memory-modal-cancel {
+  border-color: #45575e;
+  background: #263238;
+  color: var(--canaima-text-light);
+}
+
+html.dark & .memory-modal-cancel:hover {
+  background: #34444a;
+}
+
+html.dark & .memory-modal-confirm {
+  background: #0b6793;
 }
 
 html.dark & .session-state {
